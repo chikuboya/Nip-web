@@ -7,35 +7,88 @@
     <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
     <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
     <style>
-        body { font-family: sans-serif; text-align: center; background: #f0f0f0; margin: 0; padding: 20px; }
-        #game-container { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        canvas { background-color: #8FBC8F; border: 2px solid #333; cursor: pointer; max-width: 100%; height: auto; }
-        .controls { margin-top: 20px; display: flex; justify-content: center; gap: 10px; }
-        button { padding: 10px 20px; font-weight: bold; cursor: pointer; }
-        #status { font-size: 1.2rem; font-weight: bold; margin-bottom: 10px; }
-        /* 広告スペースのダミー */
-        .ad-space { margin: 20px 0; background: #eee; border: 1px dashed #ccc; padding: 10px; min-height: 90px; }
+        body { font-family: 'Hiragino Kaku Gothic ProN', 'Meiryo', sans-serif; text-align: center; background: #f0f0f0; margin: 0; padding: 10px; }
+        #app-container { max-width: 600px; margin: 0 auto; background: white; min-height: 90vh; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); overflow: hidden; position: relative; }
+        
+        /* メニュー画面 */
+        #menu-screen { padding: 40px 20px; display: block; }
+        .menu-title { font-size: 2.2rem; font-weight: bold; margin-bottom: 40px; color: #333; }
+        .section-title { font-size: 1.1rem; font-weight: bold; margin: 20px 0 10px; color: #666; }
+        .btn-main { width: 85%; padding: 15px; font-size: 1.2rem; font-weight: bold; cursor: pointer; border: none; border-radius: 8px; margin: 10px 0; background: #4a4a4a; color: white; }
+        .btn-start { background: #add8e6; color: #333; margin-top: 30px; font-size: 1.5rem; }
+        .toggle-group { display: flex; justify-content: center; gap: 5px; margin-bottom: 15px; }
+        .toggle-btn { flex: 1; padding: 10px; border: 1px solid #ccc; background: white; cursor: pointer; font-weight: bold; }
+        .toggle-btn.active { background: #4a4a4a; color: white; border-color: #4a4a4a; }
+        .lv-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; width: 90%; margin: 0 auto; }
+
+        /* ゲーム画面 */
+        #game-screen { display: none; padding: 10px; background-color: #8FBC8F; height: 100%; min-height: 90vh; }
+        #status-label { font-size: 1.2rem; font-weight: bold; padding: 10px; color: black; height: 30px; }
+        #result-label { font-size: 2.5rem; font-weight: bold; color: red; position: absolute; width: 100%; top: 40%; pointer-events: none; text-shadow: 2px 2px 4px white; display: none;}
+        canvas { background-color: #8FBC8F; cursor: pointer; max-width: 100%; height: auto; touch-action: none; }
+        .game-controls { display: flex; justify-content: space-around; padding: 15px; }
+        .btn-game { flex: 1; margin: 0 5px; padding: 12px; font-weight: bold; font-size: 1rem; cursor: pointer; border-radius: 5px; border: 1px solid #666; }
     </style>
 </head>
 <body>
 
-<div id="game-container">
-    <h1>Nip Strategy</h1>
-    
-    <div class="ad-space">ここにGoogle広告が表示されます</div>
+<div id="app-container">
+    <div id="menu-screen">
+        <div class="menu-title">NIP 戦略モード</div>
+        <button class="btn-main" id="btn-pvp">人 対 人 (PvP)</button>
+        
+        <div style="margin: 30px 0; border-top: 1px solid #eee; padding-top: 20px;">
+            <div class="section-title">--- CPU対戦設定 ---</div>
+            <div class="toggle-group" style="width: 85%; margin: 10px auto;">
+                <button class="toggle-btn active" id="cpu-white">CPU後手(白)</button>
+                <button class="toggle-btn" id="cpu-black">CPU先手(黒)</button>
+            </div>
 
-    <div id="status">ロード中...</div>
-    <canvas id="game-board" width="600" height="600"></canvas>
+            <div class="section-title">レベル (1:初心者 - 10:最強)</div>
+            <div class="lv-grid" id="lv-container">
+                </div>
 
-    <div class="controls">
-        <button id="undo-btn">一手戻る</button>
-        <button id="reset-btn">リセット</button>
+            <button class="btn-main btn-start" id="btn-pve">対局開始</button>
+        </div>
     </div>
 
-    <div class="ad-space">ここにGoogle広告が表示されます</div>
+    <div id="game-screen">
+        <div id="status-label"></div>
+        <div id="result-label"></div>
+        <canvas id="game-board" width="600" height="650"></canvas>
+        <div class="game-controls">
+            <button class="btn-game" id="undo-btn">一手戻る</button>
+            <button class="btn-game" id="reset-btn">リセット</button>
+            <button class="btn-game" id="menu-btn">メニュー</button>
+        </div>
+    </div>
 </div>
 
 <script type="py" src="./main.py" config="./pyscript.json"></script>
-</body>
 
+<script>
+    // レベルボタンの生成と選択状態の管理（UI側）
+    const lvContainer = document.getElementById('lv-container');
+    let selectedLv = 5;
+    for(let i=1; i<=10; i++){
+        const btn = document.createElement('button');
+        btn.className = 'toggle-btn' + (i===5 ? ' active' : '');
+        btn.innerText = i;
+        btn.onclick = () => {
+            Array.from(lvContainer.children).forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            selectedLv = i;
+        };
+        lvContainer.appendChild(btn);
+    }
+
+    // 先手後手切り替え
+    const btnWhite = document.getElementById('cpu-white');
+    const btnBlack = document.getElementById('cpu-black');
+    let cpuColor = 'white';
+    btnWhite.onclick = () => { btnWhite.classList.add('active'); btnBlack.classList.remove('active'); cpuColor='white'; };
+    btnBlack.onclick = () => { btnBlack.classList.add('active'); btnWhite.classList.remove('active'); cpuColor='black'; };
+</script>
+
+</body>
 </html>
