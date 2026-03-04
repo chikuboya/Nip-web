@@ -303,16 +303,23 @@ class NipWebGame:
 
     def start_game(self, mode):
         self.mode = mode
-        # JS側のグローバル変数から設定を取得
-        self.cpu_color = window.cpuColor
-        self.level = window.selectedLv
+        # windowオブジェクトから安全に取得（もし取得できなければデフォルト値を使用）
+        try:
+            self.cpu_color = getattr(window, "cpuColor", "white")
+            self.level = int(getattr(window, "selectedLv", 5))
+        except Exception as e:
+            print(f"JS variables not found, using defaults: {e}")
+            self.cpu_color = "white"
+            self.level = 5
+            
         document.getElementById("menu-screen").style.display = "none"
         document.getElementById("game-screen").style.display = "block"
         self.reset_game()
-
+        
     def show_menu(self):
         document.getElementById("game-screen").style.display = "none"
         document.getElementById("menu-screen").style.display = "block"
 
 # 起動
 game = NipWebGame()
+
