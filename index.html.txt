@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nip Strategy - 円形オセロ</title>
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #f0f0f0; margin: 0; padding: 20px; }
+        #game-container { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        canvas { background-color: #8FBC8F; border: 2px solid #333; cursor: pointer; max-width: 100%; height: auto; }
+        .controls { margin-top: 20px; display: flex; justify-content: center; gap: 10px; }
+        button { padding: 10px 20px; font-weight: bold; cursor: pointer; }
+        #status { font-size: 1.2rem; font-weight: bold; margin-bottom: 10px; }
+        /* 広告スペースのダミー */
+        .ad-space { margin: 20px 0; background: #eee; border: 1px dashed #ccc; padding: 10px; min-height: 90px; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <h1>Nip Strategy</h1>
+    
+    <div class="ad-space">ここにGoogle広告が表示されます</div>
+
+    <div id="status">ロード中...</div>
+    <canvas id="game-board" width="600" height="600"></canvas>
+
+    <div class="controls">
+        <button id="undo-btn">一手戻る</button>
+        <button id="reset-btn">リセット</button>
+    </div>
+
+    <div class="ad-space">ここにGoogle広告が表示されます</div>
+</div>
+
+<script type="py" src="./main.py" config="./pyscript.json"></script>
+</body>
+</html>
