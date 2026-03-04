@@ -67,9 +67,13 @@
 <script type="py" src="./main.py" config="./pyscript.json"></script>
 
 <script>
-    // レベルボタンの生成と選択状態の管理（UI側）
+    // Pythonからアクセスできるように window オブジェクトに直接持たせる
+    window.selectedLv = 5;
+    window.cpuColor = 'white';
+
     const lvContainer = document.getElementById('lv-container');
-    let selectedLv = 5;
+    
+    // レベルボタンの生成
     for(let i=1; i<=10; i++){
         const btn = document.createElement('button');
         btn.className = 'toggle-btn' + (i===5 ? ' active' : '');
@@ -77,7 +81,7 @@
         btn.onclick = () => {
             Array.from(lvContainer.children).forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            selectedLv = i;
+            window.selectedLv = i; // windowを更新
         };
         lvContainer.appendChild(btn);
     }
@@ -85,10 +89,19 @@
     // 先手後手切り替え
     const btnWhite = document.getElementById('cpu-white');
     const btnBlack = document.getElementById('cpu-black');
-    let cpuColor = 'white';
-    btnWhite.onclick = () => { btnWhite.classList.add('active'); btnBlack.classList.remove('active'); cpuColor='white'; };
-    btnBlack.onclick = () => { btnBlack.classList.add('active'); btnWhite.classList.remove('active'); cpuColor='black'; };
+    
+    btnWhite.onclick = () => { 
+        btnWhite.classList.add('active'); 
+        btnBlack.classList.remove('active'); 
+        window.cpuColor = 'white'; // windowを更新
+    };
+    btnBlack.onclick = () => { 
+        btnBlack.classList.add('active'); 
+        btnWhite.classList.remove('active'); 
+        window.cpuColor = 'black'; // windowを更新
+    };
 </script>
 
 </body>
 </html>
+
