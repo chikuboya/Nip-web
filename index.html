@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-3649897440139100"
+     crossorigin="anonymous"></script>
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nip Strategy - 円形オセロ</title>
@@ -25,9 +28,13 @@
         #game-screen { display: none; padding: 10px; background-color: #8FBC8F; height: 100%; min-height: 90vh; }
         #status-label { font-size: 1.2rem; font-weight: bold; padding: 10px; color: black; height: 30px; }
         #result-label { font-size: 2.5rem; font-weight: bold; color: red; position: absolute; width: 100%; top: 40%; pointer-events: none; text-shadow: 2px 2px 4px white; display: none;}
-        canvas { background-color: #8FBC8F; cursor: pointer; max-width: 100%; height: auto; touch-action: none; }
+        canvas { background-color: #8FBC8F; cursor: pointer; max-width: 100%; height: auto; touch-action: none; border-radius: 10px; }
         .game-controls { display: flex; justify-content: space-around; padding: 15px; }
         .btn-game { flex: 1; margin: 0 5px; padding: 12px; font-weight: bold; font-size: 1rem; cursor: pointer; border-radius: 5px; border: 1px solid #666; }
+
+        /* コンテンツ（審査対策用テキスト） */
+        .how-to-play { text-align: left; padding: 20px; line-height: 1.6; color: #444; border-top: 1px solid #eee; margin-top: 20px; }
+        .how-to-play h3 { color: #333; border-left: 5px solid #4a4a4a; padding-left: 10px; }
     </style>
 </head>
 <body>
@@ -45,10 +52,18 @@
             </div>
 
             <div class="section-title">レベル (1:初心者 - 10:最強)</div>
-            <div class="lv-grid" id="lv-container">
-                </div>
+            <div class="lv-grid" id="lv-container"></div>
 
             <button class="btn-main btn-start" id="btn-pve">人 対 CPU　対局開始</button>
+        </div>
+
+        <div class="how-to-play">
+            <h3>NIP（ニップ）とは？</h3>
+            <p>NIPは、従来のオセロに「円形」の概念を取り入れた戦略ボードゲームです。通常の8×8の盤面とは異なり、円周に沿った独特のラインが存在します。</p>
+            <h3>基本ルール</h3>
+            <p>1. 黒と白が交互に石を置いていきます。相手の石を自分の石で挟むと、自分の色に変わります。<br>
+               2. **円形ライン:** 外周の石は、円に沿って繋がっています。円周のラインを利用して相手を挟むことができるのがNIP最大の特徴です。<br>
+               3. **戦略ポイント:** 盤面の中には戦略的に重要な「ノード」が存在します。角がない円形の盤面で、どこを制するかが勝利の鍵となります。</p>
         </div>
     </div>
 
@@ -67,13 +82,10 @@
 <script type="py" src="./main.py" config="./pyscript.json"></script>
 
 <script>
-    // Pythonからアクセスできるように window オブジェクトに直接持たせる
     window.selectedLv = 5;
     window.cpuColor = 'white';
 
     const lvContainer = document.getElementById('lv-container');
-    
-    // レベルボタンの生成
     for(let i=1; i<=10; i++){
         const btn = document.createElement('button');
         btn.className = 'toggle-btn' + (i===5 ? ' active' : '');
@@ -81,29 +93,16 @@
         btn.onclick = () => {
             Array.from(lvContainer.children).forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            window.selectedLv = i; // windowを更新
+            window.selectedLv = i;
         };
         lvContainer.appendChild(btn);
     }
 
-    // 先手後手切り替え
     const btnWhite = document.getElementById('cpu-white');
     const btnBlack = document.getElementById('cpu-black');
-    
-    btnWhite.onclick = () => { 
-        btnWhite.classList.add('active'); 
-        btnBlack.classList.remove('active'); 
-        window.cpuColor = 'white'; // windowを更新
-    };
-    btnBlack.onclick = () => { 
-        btnBlack.classList.add('active'); 
-        btnWhite.classList.remove('active'); 
-        window.cpuColor = 'black'; // windowを更新
-    };
+    btnWhite.onclick = () => { btnWhite.classList.add('active'); btnBlack.classList.remove('active'); window.cpuColor = 'white'; };
+    btnBlack.onclick = () => { btnBlack.classList.add('active'); btnWhite.classList.remove('active'); window.cpuColor = 'black'; };
 </script>
 
 </body>
 </html>
-
-
-
