@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nip Game - Random Early Moves</title>
+    <title>Nip Game - JS Version</title>
     <style>
         body { font-family: 'Helvetica Neue', Arial, sans-serif; display: flex; flex-direction: column; align-items: center; background-color: #e0e0e0; margin: 0; padding: 20px; }
         #menu-screen, #game-screen { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); text-align: center; max-width: 650px; width: 100%; }
@@ -14,7 +14,6 @@
         button:hover, .link-button:hover { background-color: #666; }
         #btn-pvp { background-color: #2c3e50; }
         #btn-pve { background-color: #27ae60; }
-        /* トップへ戻るボタン専用のスタイル */
         #btn-back-home { background-color: #7f8c8d; margin-top: 25px; font-size: 14px; }
         .setting-group { margin: 15px 0; font-size: 18px; }
         select { padding: 8px; font-size: 16px; border-radius: 5px; border: 1px solid #ccc; }
@@ -62,7 +61,6 @@
     </div>
 
     <script>
-        // --- 以前のスクリプト（ロジック部分）はそのまま維持 ---
         window.selectedLv = 5;
         window.cpuColor = "white";
 
@@ -80,7 +78,6 @@
                 this.cell_size = 62;
                 this.offset = 80;
                 this.setup_ui_events();
-                this.reset_game();
             }
 
             reset_game() {
@@ -95,8 +92,8 @@
                 this.pass_msg = "";
                 this.result_label.style.display = "none";
                 this.draw();
-                if (this.mode === "PvE" && this.turn === this.cpu_color) {
-                    setTimeout(() => this.cpu_move(), 1000);
+                if (this.mode === "PvE" && this.cpu_color === 'black') {
+                    setTimeout(() => this.cpu_move(), 600);
                 }
             }
 
@@ -193,7 +190,6 @@
                 let score = 0;
                 let filled = Object.values(board).filter(v => v !== null).length;
                 let is_endgame = filled > 42;
-                let opp = color === 'black' ? 'white' : 'black';
                 for (let coordStr in board) {
                     let st = board[coordStr]; if (st === null) continue;
                     let coord = coordStr.split(',').map(Number);
@@ -224,11 +220,6 @@
                     if (f.length > 0) moves.push({m: n, f: f});
                 });
                 if (moves.length === 0) return this.evaluate_board(board, color);
-                moves.sort((a, b) => {
-                    let scoreA = a.f.length + (STRATEGIC_NODES.some(n => n[0] === a.m[0] && n[1] === a.m[1]) ? 30 : 0);
-                    let scoreB = b.f.length + (STRATEGIC_NODES.some(n => n[0] === b.m[0] && n[1] === b.m[1]) ? 30 : 0);
-                    return scoreB - scoreA;
-                });
                 if (is_maximizing) {
                     let v = -99999;
                     for (let move of moves) {
@@ -253,21 +244,24 @@
             }
 
             cpu_move() {
-                if (this.is_game_over) return;
+                if (this.is_game_over || this.turn !== this.cpu_color) return;
                 let moves = [];
                 VALID_COORDS.forEach(n => {
                     let f = this.get_flipped(n, this.turn, this.board);
                     if (f.length > 0) moves.push({m: n, f: f});
                 });
                 if (moves.length === 0) return;
+
                 const blackCount = Object.values(this.board).filter(v => v === 'black').length;
                 const whiteCount = Object.values(this.board).filter(v => v === 'white').length;
+                
                 if (this.cpu_color === 'black' && this.turn === 'black' && (blackCount === 2 || blackCount === 3)) {
                     this.make_move(moves[Math.floor(Math.random() * moves.length)].m); return;
                 }
                 if (this.cpu_color === 'white' && this.turn === 'white' && whiteCount === 2) {
                     this.make_move(moves[Math.floor(Math.random() * moves.length)].m); return;
                 }
+
                 const lv_cfg = {
                     1: {d: 0, r: 0.7, t: 100},  2: {d: 1, r: 0.5, t: 200},
                     3: {d: 1, r: 0.3, t: 300},  4: {d: 2, r: 0.2, t: 400},
@@ -283,11 +277,6 @@
                     let best_m = moves[0].m;
                     for (let d = 1; d <= cfg.d; d++) {
                         let cur_best_v = -100000; let cur_best_m = null;
-                        moves.sort((a, b) => {
-                            let scoreA = a.f.length + (STRATEGIC_NODES.some(n => n[0] === a.m[0] && n[1] === a.m[1]) ? 30 : 0);
-                            let scoreB = b.f.length + (STRATEGIC_NODES.some(n => n[0] === b.m[0] && n[1] === b.m[1]) ? 30 : 0);
-                            return scoreB - scoreA;
-                        });
                         for (let move of moves) {
                             if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; break; }
                             let nb = Object.assign({}, this.board); nb[k(move.m)] = this.turn;
@@ -303,6 +292,7 @@
             }
 
             make_move(coord) {
+                if (this.is_game_over) return;
                 let to_flip = this.get_flipped(coord, this.turn, this.board);
                 if (to_flip.length > 0) {
                     this.pass_msg = "";
@@ -315,6 +305,7 @@
             }
 
             check_pass() {
+                if (this.is_game_over) return;
                 let has_move = VALID_COORDS.some(n => this.get_flipped(n, this.turn, this.board).length > 0);
                 if (!has_move) {
                     let opp = this.turn === 'black' ? 'white' : 'black';
@@ -344,6 +335,8 @@
                 if (this.history.length === 0) return;
                 this.is_game_over = false; this.result_label.style.display = "none";
                 let steps = (this.mode === "PvE" && this.history.length >= 2) ? 2 : 1;
+                if (this.mode === "PvE" && this.cpu_color === 'black' && this.history.length === 1) steps = 1;
+
                 for (let i = 0; i < steps; i++) {
                     if (this.history.length > 0) {
                         let s = this.history.pop();
@@ -351,6 +344,9 @@
                     }
                 }
                 this.pass_msg = ""; this.draw();
+                if (this.mode === "PvE" && this.turn === this.cpu_color) {
+                    setTimeout(() => this.cpu_move(), 800);
+                }
             }
 
             handle_click(event) {
