@@ -15,10 +15,12 @@
         #btn-pvp { background-color: #2c3e50; }
         #btn-pve { background-color: #27ae60; }
         #btn-back-home { background-color: #7f8c8d; margin-top: 25px; font-size: 14px; }
+        /* ステップ2: ヒントボタンのスタイル */
+        #hint-btn { background-color: #f39c12; }
+        #hint-btn:hover { background-color: #d35400; }
         .setting-group { margin: 15px 0; font-size: 18px; }
         select { padding: 8px; font-size: 16px; border-radius: 5px; border: 1px solid #ccc; }
         #status-label { font-size: 22px; font-weight: bold; margin-bottom: 10px; color: #333; }
-        /* 設定表示用のスタイル */
         #settings-display { font-size: 18px; font-weight: bold; color: #000000; margin-bottom: 15px; background: #f0f0f0; padding: 8px 15px; border-radius: 5px; display: inline-block; border: 1px solid #ccc; }
         #result-label { color: #e74c3c; font-size: 28px; font-weight: bold; display: none; margin: 15px; padding: 10px; border: 2px solid #e74c3c; border-radius: 10px; }
     </style>
@@ -58,6 +60,7 @@
         <canvas id="game-board" width="600" height="650"></canvas>
         <div class="controls">
             <button id="undo-btn">待った</button>
+            <button id="hint-btn">ヒント</button>
             <button id="reset-btn">リセット</button>
             <button id="menu-btn">メニューへ</button>
         </div>
@@ -81,7 +84,55 @@
                 this.result_label = document.getElementById("result-label");
                 this.cell_size = 62;
                 this.offset = 80;
+                // ステップ3-①: ヒント用の変数を追加
+                this.hint_move = null;
                 this.setup_ui_events();
+            }
+
+            // ステップ3-④: ヒント計算用の関数（show_hint）を追加
+            show_hint() {
+                if (this.is_game_over || (this.mode === "PvE" && this.turn === this.cpu_color)) return;
+                this.status_label.innerText = "ヒント考案中...";
+                
+                setTimeout(() => {
+                    const startTime = Date.now();
+                    const timeLimit = 1500; // 1.5秒で打ち切り
+                    const moves = [];
+                    VALID_COORDS.forEach(n => {
+                        let f = this.get_flipped(n, this.turn, this.board);
+                        if (f.length > 0) moves.push({m: n, f: f});
+                    });
+                    
+                    if (moves.length === 0) return;
+
+                    let bestScore = -Infinity;
+                    let bestMove = moves[0].m;
+
+                    this.start_time = startTime;
+                    this.time_limit = timeLimit;
+                    this.abort_search = false;
+
+                    // 7手先（深さ6）を探索
+                    for (let moveObj of moves) {
+                        if (Date.now() - startTime > timeLimit) break;
+                        
+                        let nb = Object.assign({}, this.board);
+                        nb[k(moveObj.m)] = this.turn;
+                        moveObj.f.forEach(s => nb[k(s)] = this.turn);
+                        
+                        // 既存のminimaxを活用 (深さ6)
+                        const score = this.minimax(nb, 6, -100000, 100000, false, this.turn);
+                        
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestMove = moveObj.m;
+                        }
+                    }
+
+                    this.hint_move = bestMove;
+                    this.status_label.innerText = `ヒント: [${bestMove[0]}, ${bestMove[1]}] 付近が良さそうです`;
+                    this.draw();
+                }, 50);
             }
 
             reset_game() {
@@ -92,17 +143,17 @@
                 this.turn = 'black';
                 this.history = [];
                 this.last_move = null;
+                this.hint_move = null; // リセット時にヒントも消去
                 this.is_game_over = false;
                 this.pass_msg = "";
                 this.result_label.style.display = "none";
-                this.update_settings_ui(); // 設定表示を更新
+                this.update_settings_ui();
                 this.draw();
                 if (this.mode === "PvE" && this.cpu_color === 'black') {
                     setTimeout(() => this.cpu_move(), 600);
                 }
             }
 
-            // 対戦設定のテキストを更新
             update_settings_ui() {
                 if (this.mode === "PvE") {
                     const colorTxt = this.cpu_color === 'black' ? "黒 (先手)" : "白 (後手)";
@@ -156,6 +207,21 @@
                         }
                     }
                 });
+
+                // ステップ3-③: 描画の最後にヒント枠を表示
+                if (this.hint_move) {
+                    const [hc, hr] = this.hint_move;
+                    this.ctx.strokeStyle = "#3498db"; 
+                    this.ctx.lineWidth = 5;
+                    // セルの中央に青い枠を描画
+                    this.ctx.strokeRect(
+                        this.offset + hc * this.cell_size - (this.cell_size/2) + 5, 
+                        this.offset + hr * this.cell_size - (this.cell_size/2) + 5, 
+                        this.cell_size - 10, 
+                        this.cell_size - 10
+                    );
+                }
+
                 this.update_status_ui();
             }
 
@@ -340,6 +406,7 @@
 
             end_game() {
                 this.is_game_over = true;
+                this.hint_move = null;
                 let b = Object.values(this.board).filter(v => v === 'black').length;
                 let w = Object.values(this.board).filter(v => v === 'white').length;
                 let winner = b > w ? "黒の勝ち！" : w > b ? "白の勝ち！" : "引き分け";
@@ -349,6 +416,7 @@
             undo() {
                 if (this.history.length === 0) return;
                 this.is_game_over = false; this.result_label.style.display = "none";
+                this.hint_move = null;
                 let steps = (this.mode === "PvE" && this.history.length >= 2) ? 2 : 1;
                 if (this.mode === "PvE" && this.cpu_color === 'black' && this.history.length === 1) steps = 1;
 
@@ -366,6 +434,8 @@
 
             handle_click(event) {
                 if (this.is_game_over) return;
+                // ヒントを消すタイミングを追加
+                this.hint_move = null;
                 if (this.mode === "PvE" && this.turn === this.cpu_color) return;
                 let rect = this.canvas.getBoundingClientRect();
                 let scaleX = this.canvas.width / rect.width;
@@ -385,6 +455,8 @@
             setup_ui_events() {
                 this.canvas.onclick = (e) => this.handle_click(e);
                 document.getElementById("undo-btn").onclick = () => this.undo();
+                // ステップ3-②: ヒントボタンのイベント登録
+                document.getElementById("hint-btn").onclick = () => this.show_hint();
                 document.getElementById("reset-btn").onclick = () => this.reset_game();
                 document.getElementById("menu-btn").onclick = () => this.show_menu();
                 document.getElementById("btn-pvp").onclick = () => this.start_game("PvP");
