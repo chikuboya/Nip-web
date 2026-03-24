@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nip Game</title>
+    <title>Nip Game - Optimized Hint</title>
     <style>
         body { font-family: 'Helvetica Neue', Arial, sans-serif; display: flex; flex-direction: column; align-items: center; background-color: #e0e0e0; margin: 0; padding: 20px; }
         #menu-screen, #game-screen { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); text-align: center; max-width: 650px; width: 100%; }
@@ -15,7 +15,6 @@
         #btn-pvp { background-color: #2c3e50; }
         #btn-pve { background-color: #27ae60; }
         #btn-back-home { background-color: #7f8c8d; margin-top: 25px; font-size: 14px; }
-        /* ステップ2: ヒントボタンのスタイル */
         #hint-btn { background-color: #f39c12; }
         #hint-btn:hover { background-color: #d35400; }
         .setting-group { margin: 15px 0; font-size: 18px; }
@@ -84,23 +83,417 @@
                 this.result_label = document.getElementById("result-label");
                 this.cell_size = 62;
                 this.offset = 80;
-                // ステップ3-①: ヒント用の変数を追加
                 this.hint_move = null;
                 this.setup_ui_events();
             }
 
-            // ステップ3-④: ヒント計算用の関数（show_hint）を追加
+            // --- 極限強化版ヒント：中盤18手 / 終盤22手完読み ---
             show_hint() {
                 if (this.is_game_over || (this.mode === "PvE" && this.turn === this.cpu_color)) return;
-                this.status_label.innerText = "ヒント考案中...";
+                this.status_label.innerText = "神の領域を探索中...";
                 
                 setTimeout(() => {
-                    const startTime = Date.now();
-                    const timeLimit = 1500; // 1.5秒で打ち切り
+                    this.start_time = Date.now();
+                    this.time_limit = 2500; // 思考時間は2.5秒を維持（精度確保のため）
+                    this.abort_search = false;
+
+                    const emptyCells = VALID_COORDS.filter(n => this.board[k(n)] === null).length;
+                    
+                    // 終盤は22手、序盤・中盤は18手先まで探索
+                    const maxDepth = emptyCells <= 22 ? 22 : 18; 
+
                     const moves = [];
                     VALID_COORDS.forEach(n => {
                         let f = this.get_flipped(n, this.turn, this.board);
                         if (f.length > 0) moves.push({m: n, f: f});
+                    });
+                    
+                    if (moves.length === 0) return;
+
+                    let bestMove = moves[0].m;
+                    this.current_hint_depth = 0;
+
+                    // 反復深化：1手ずつ深く読み、時間限界まで最善を尽くす
+                    for (let d = 1; d <= maxDepth; d++) {
+                        let cur_best_v = -100000;
+                        let cur_best_m = null;
+
+                        for (let move of moves) {
+                            if (Date.now() - this.start_time > this.time_limit) { 
+                                this.abort_search = true; 
+                                break; 
+                            }
+                            
+                            let nb = Object.assign({}, this.board);
+                            nb[k(move.m)] = this.turn;
+                            move.f.forEach(s => nb[k(s)] = this.turn);
+                            
+                            // Alpha-Beta法による枝刈り探索
+                            let val = this.minimax(nb, d - 1, -100000, 100000, false, this.turn);
+                            if (val > cur_best_v) {
+                                cur_best_v = val;
+                                cur_best_m = move.m;
+                            }
+                        }
+                        
+                        if (this.abort_search) break;
+                        bestMove = cur_best_m; 
+                        this.current_hint_depth = d; 
+                    }
+
+                    this.hint_move = bestMove;
+                    
+                    let modeText = "";
+                    if (emptyCells <= 22) {
+                        modeText = this.abort_search ? `【終盤・極限探索：深さ${this.current_hint_depth}】` : "【終盤・完全読み切り】";
+                    } else {
+                        modeText = `【超深層：深さ${this.current_hint_depth}】`;
+                    }
+                    
+                    this.status_label.innerText = `${modeText} ヒント: [${bestMove[0]}, ${bestMove[1]}]`;
+                    this.draw();
+                }, 50);
+            }
+
+            reset_game() {
+                this.board = {};
+                VALID_COORDS.forEach(coord => { this.board[k(coord)] = null; });
+                this.board[k([3,3])] = 'white'; this.board[k([4,4])] = 'white';
+                this.board[k([4,3])] = 'black'; this.board[k([3,4])] = 'black';
+                this.turn = 'black';
+                this.history = [];
+                this.last_move = null;
+                this.hint_move = null;
+                this.is_game_over = false;
+                this.pass_msg = "";
+                this.result_label.style.display = "none";
+                this.update_settings_ui();
+                this.draw();
+                if (this.mode === "PvE" && this.cpu_color === 'black') {
+                    setTimeout(() => this.cpu_move(), 600);
+                }
+            }
+
+            update_settings_ui() {
+                if (this.mode === "PvE") {
+                    const colorTxt = this.cpu_color === 'black' ? "黒 (先手)" : "白 (後手)";
+                    this.settings_display.innerText = `対戦モード: CPU戦 | レベル: ${this.level} | CPUの色: ${colorTxt}`;
+                } else {
+                    this.settings_display.innerText = `対戦モード: 対人戦`;
+                }
+            }
+
+            draw() {
+                this.ctx.clearRect(0, 0, 600, 650);
+                this.ctx.strokeStyle = "black";
+                this.ctx.lineWidth = 1.2;
+                VALID_COORDS.forEach(c => {
+                    let x1 = this.offset + c[0] * this.cell_size;
+                    let y1 = this.offset + c[1] * this.cell_size;
+                    [[1,0], [0,1], [1,1], [1,-1]].forEach(([dx, dy]) => {
+                        let target = [c[0] + dx, c[1] + dy];
+                        if (this.board.hasOwnProperty(k(target))) {
+                            let x2 = this.offset + target[0] * this.cell_size;
+                            let y2 = this.offset + target[1] * this.cell_size;
+                            this.ctx.beginPath(); this.ctx.moveTo(x1, y1); this.ctx.lineTo(x2, y2); this.ctx.stroke();
+                        }
+                    });
+                });
+                let cx = this.offset + 3.5 * this.cell_size;
+                let cy = this.offset + 3.5 * this.cell_size;
+                this.ctx.beginPath(); this.ctx.arc(cx, cy, this.cell_size * 3.8, 0, Math.PI * 2);
+                this.ctx.lineWidth = 2; this.ctx.stroke();
+
+                VALID_COORDS.forEach(coord => {
+                    let x = this.offset + coord[0] * this.cell_size;
+                    let y = this.offset + coord[1] * this.cell_size;
+                    let stone = this.board[k(coord)];
+                    if (stone) {
+                        this.ctx.beginPath(); this.ctx.arc(x, y, this.cell_size * 0.38, 0, Math.PI * 2);
+                        this.ctx.fillStyle = stone === 'black' ? "black" : "white";
+                        this.ctx.fill(); this.ctx.strokeStyle = "#888"; this.ctx.stroke();
+                        if (this.last_move && coord[0] === this.last_move[0] && coord[1] === this.last_move[1]) {
+                            this.ctx.beginPath(); this.ctx.arc(x, y, this.cell_size * 0.4, 0, Math.PI * 2);
+                            this.ctx.strokeStyle = "red"; this.ctx.lineWidth = 3; this.ctx.stroke();
+                        }
+                    } else {
+                        this.ctx.beginPath(); this.ctx.arc(x, y, 4, 0, Math.PI * 2);
+                        this.ctx.fillStyle = "#556B2F"; this.ctx.fill();
+                        if (!this.is_game_over && (this.mode === "PvP" || this.turn !== this.cpu_color)) {
+                            if (this.get_flipped(coord, this.turn, this.board).length > 0) {
+                                this.ctx.beginPath(); this.ctx.arc(x, y, this.cell_size * 0.2, 0, Math.PI * 2);
+                                this.ctx.fillStyle = "rgba(255, 255, 204, 0.6)"; this.ctx.fill();
+                            }
+                        }
+                    }
+                });
+
+                if (this.hint_move) {
+                    const [hc, hr] = this.hint_move;
+                    this.ctx.strokeStyle = "#3498db"; 
+                    this.ctx.lineWidth = 5;
+                    this.ctx.strokeRect(
+                        this.offset + hc * this.cell_size - (this.cell_size/2) + 5, 
+                        this.offset + hr * this.cell_size - (this.cell_size/2) + 5, 
+                        this.cell_size - 10, 
+                        this.cell_size - 10
+                    );
+                }
+
+                this.update_status_ui();
+            }
+
+            update_status_ui() {
+                let b = Object.values(this.board).filter(v => v === 'black').length;
+                let w = Object.values(this.board).filter(v => v === 'white').length;
+                let t_name = this.turn === 'black' ? "黒" : "白";
+                let status = `黒: ${b}  白: ${w} | 次: ${t_name}`;
+                if (this.pass_msg) status = `${this.pass_msg} ${status}`;
+                this.status_label.innerText = status;
+            }
+
+            get_flipped(start, color, board_state) {
+                if (board_state[k(start)] !== null) return [];
+                let opp = color === 'black' ? 'white' : 'black';
+                let flipped = [];
+                [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dx, dy]) => {
+                    let path = []; let curr = [start[0] + dx, start[1] + dy];
+                    while (board_state.hasOwnProperty(k(curr))) {
+                        let st = board_state[k(curr)];
+                        if (st === opp) { path.push([...curr]); }
+                        else if (st === color) { if (path.length > 0) flipped.push(...path); break; }
+                        else break;
+                        curr = [curr[0] + dx, curr[1] + dy];
+                    }
+                });
+                let circIdx = CIRCUMFERENCE.findIndex(c => c[0] === start[0] && c[1] === start[1]);
+                if (circIdx !== -1) {
+                    [1, -1].forEach(d => {
+                        let path = [];
+                        for (let i = 1; i < CIRCUMFERENCE.length; i++) {
+                            let idx = (circIdx + i * d + CIRCUMFERENCE.length * 100) % CIRCUMFERENCE.length;
+                            let curr = CIRCUMFERENCE[idx];
+                            let st = board_state[k(curr)];
+                            if (st === opp) { path.push([...curr]); }
+                            else if (st === color) { if (path.length > 0) flipped.push(...path); break; }
+                            else break;
+                        }
+                    });
+                }
+                let unique = []; let seen = new Set();
+                flipped.forEach(p => { let key = k(p); if (!seen.has(key)) { seen.add(key); unique.push(p); } });
+                return unique;
+            }
+
+            evaluate_board(board, color) {
+                let score = 0;
+                let filled = Object.values(board).filter(v => v !== null).length;
+                let is_endgame = filled > 42;
+                for (let coordStr in board) {
+                    let st = board[coordStr]; if (st === null) continue;
+                    let coord = coordStr.split(',').map(Number);
+                    let val = 1.0;
+                    if (STRATEGIC_NODES.some(n => n[0] === coord[0] && n[1] === coord[1])) val += is_endgame ? 5.0 : 25.0;
+                    else if (CIRCUMFERENCE.some(n => n[0] === coord[0] && n[1] === coord[1])) val += is_endgame ? 3.0 : 10.0;
+                    if (!is_endgame) {
+                        let liberties = 0;
+                        [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dx, dy]) => {
+                            let nx = coord[0] + dx, ny = coord[1] + dy;
+                            if (board.hasOwnProperty(k([nx, ny])) && board[k([nx, ny])] === null) liberties++;
+                        });
+                        val -= liberties * 1.5;
+                    } else { val += 5.0; }
+                    if (st === color) score += val; else score -= val;
+                }
+                return score;
+            }
+
+            minimax(board, depth, alpha, beta, is_maximizing, color) {
+                if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; return this.evaluate_board(board, color); }
+                if (depth <= 0 || this.abort_search) return this.evaluate_board(board, color);
+                let opp = color === 'black' ? 'white' : 'black';
+                let curr_p = is_maximizing ? color : opp;
+                let moves = [];
+                VALID_COORDS.forEach(n => {
+                    let f = this.get_flipped(n, curr_p, board);
+                    if (f.length > 0) moves.push({m: n, f: f});
+                });
+                if (moves.length === 0) return this.evaluate_board(board, color);
+                if (is_maximizing) {
+                    let v = -99999;
+                    for (let move of moves) {
+                        let nb = Object.assign({}, board); nb[k(move.m)] = color;
+                        move.f.forEach(s => nb[k(s)] = color);
+                        v = Math.max(v, this.minimax(nb, depth - 1, alpha, beta, false, color));
+                        alpha = Math.max(alpha, v);
+                        if (beta <= alpha || this.abort_search) break;
+                    }
+                    return v;
+                } else {
+                    let v = 99999;
+                    for (let move of moves) {
+                        let nb = Object.assign({}, board); nb[k(move.m)] = opp;
+                        move.f.forEach(s => nb[k(s)] = opp);
+                        v = Math.min(v, this.minimax(nb, depth - 1, alpha, beta, true, color));
+                        beta = Math.min(beta, v);
+                        if (beta <= alpha || this.abort_search) break;
+                    }
+                    return v;
+                }
+            }
+
+            cpu_move() {
+                if (this.is_game_over || this.turn !== this.cpu_color) return;
+                let moves = [];
+                VALID_COORDS.forEach(n => {
+                    let f = this.get_flipped(n, this.turn, this.board);
+                    if (f.length > 0) moves.push({m: n, f: f});
+                });
+                if (moves.length === 0) return;
+                const blackCount = Object.values(this.board).filter(v => v === 'black').length;
+                const whiteCount = Object.values(this.board).filter(v => v === 'white').length;
+                if (this.cpu_color === 'black' && this.turn === 'black' && (blackCount === 2 || blackCount === 3)) {
+                    this.make_move(moves[Math.floor(Math.random() * moves.length)].m); return;
+                }
+                if (this.cpu_color === 'white' && this.turn === 'white' && whiteCount === 2) {
+                    this.make_move(moves[Math.floor(Math.random() * moves.length)].m); return;
+                }
+                const lv_cfg = {
+                    1: {d: 0, r: 0.7, t: 100},  2: {d: 1, r: 0.5, t: 200},
+                    3: {d: 1, r: 0.3, t: 300},  4: {d: 2, r: 0.2, t: 400},
+                    5: {d: 2, r: 0.1, t: 500},  6: {d: 4, r: 0.05, t: 700},
+                    7: {d: 6, r: 0.0, t: 900},  8: {d: 8, r: 0.0, t: 1100},
+                    9: {d: 10, r: 0.0, t: 1300}, 10: {d: 14, r: 0.0, t: 1500}
+                };
+                let cfg = lv_cfg[this.level] || lv_cfg[5];
+                if (Math.random() < cfg.r) {
+                    this.make_move(moves[Math.floor(Math.random() * moves.length)].m);
+                } else {
+                    this.start_time = Date.now(); this.time_limit = cfg.t; this.abort_search = false;
+                    let best_m = moves[0].m;
+                    for (let d = 1; d <= cfg.d; d++) {
+                        let cur_best_v = -100000; let cur_best_m = null;
+                        for (let move of moves) {
+                            if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; break; }
+                            let nb = Object.assign({}, this.board); nb[k(move.m)] = this.turn;
+                            move.f.forEach(s => nb[k(s)] = this.turn);
+                            let val = this.minimax(nb, d - 1, -100000, 100000, false, this.turn);
+                            if (val > cur_best_v) { cur_best_v = val; cur_best_m = move.m; }
+                        }
+                        if (this.abort_search) break;
+                        best_m = cur_best_m;
+                    }
+                    this.make_move(best_m);
+                }
+            }
+
+            make_move(coord) {
+                if (this.is_game_over) return;
+                let to_flip = this.get_flipped(coord, this.turn, this.board);
+                if (to_flip.length > 0) {
+                    this.pass_msg = "";
+                    this.history.push({board: Object.assign({}, this.board), turn: this.turn, last_move: this.last_move});
+                    this.board[k(coord)] = this.turn; this.last_move = coord;
+                    to_flip.forEach(n => this.board[k(n)] = this.turn);
+                    this.turn = this.turn === 'black' ? 'white' : 'black';
+                    this.draw(); setTimeout(() => this.check_pass(), 300);
+                }
+            }
+
+            check_pass() {
+                if (this.is_game_over) return;
+                let has_move = VALID_COORDS.some(n => this.get_flipped(n, this.turn, this.board).length > 0);
+                if (!has_move) {
+                    let opp = this.turn === 'black' ? 'white' : 'black';
+                    let opp_has_move = VALID_COORDS.some(n => this.get_flipped(n, opp, this.board).length > 0);
+                    if (!opp_has_move) { this.end_game(); }
+                    else {
+                        let p_name = this.turn === 'black' ? "黒" : "白";
+                        this.pass_msg = `【${p_name}はパス】`;
+                        this.history.push({board: Object.assign({}, this.board), turn: this.turn, last_move: this.last_move});
+                        this.turn = opp; this.draw();
+                        if (this.mode === "PvE" && this.turn === this.cpu_color) setTimeout(() => this.cpu_move(), 800);
+                    }
+                } else if (this.mode === "PvE" && this.turn === this.cpu_color) {
+                    setTimeout(() => this.cpu_move(), 600);
+                }
+            }
+
+            end_game() {
+                this.is_game_over = true;
+                this.hint_move = null;
+                let b = Object.values(this.board).filter(v => v === 'black').length;
+                let w = Object.values(this.board).filter(v => v === 'white').length;
+                let winner = b > w ? "黒の勝ち！" : w > b ? "白の勝ち！" : "引き分け";
+                this.result_label.innerText = winner; this.result_label.style.display = "block"; this.draw();
+            }
+
+            undo() {
+                if (this.history.length === 0) return;
+                this.is_game_over = false; this.result_label.style.display = "none";
+                this.hint_move = null;
+                let steps = (this.mode === "PvE" && this.history.length >= 2) ? 2 : 1;
+                if (this.mode === "PvE" && this.cpu_color === 'black' && this.history.length === 1) steps = 1;
+                for (let i = 0; i < steps; i++) {
+                    if (this.history.length > 0) {
+                        let s = this.history.pop();
+                        this.board = s.board; this.turn = s.turn; this.last_move = s.last_move;
+                    }
+                }
+                this.pass_msg = ""; this.draw();
+                if (this.mode === "PvE" && this.turn === this.cpu_color) {
+                    setTimeout(() => this.cpu_move(), 800);
+                }
+            }
+
+            handle_click(event) {
+                if (this.is_game_over) return;
+                this.hint_move = null;
+                if (this.mode === "PvE" && this.turn === this.cpu_color) return;
+                let rect = this.canvas.getBoundingClientRect();
+                let scaleX = this.canvas.width / rect.width;
+                let scaleY = this.canvas.height / rect.height;
+                let x = (event.clientX - rect.left) * scaleX;
+                let y = (event.clientY - rect.top) * scaleY;
+                let best = null; let min_dist = this.cell_size * 0.5;
+                VALID_COORDS.forEach(c => {
+                    let nx = this.offset + c[0] * this.cell_size;
+                    let ny = this.offset + c[1] * this.cell_size;
+                    let d = Math.hypot(nx - x, ny - y);
+                    if (d < min_dist) { min_dist = d; best = c; }
+                });
+                if (best) this.make_move(best);
+            }
+
+            setup_ui_events() {
+                this.canvas.onclick = (e) => this.handle_click(e);
+                document.getElementById("undo-btn").onclick = () => this.undo();
+                document.getElementById("hint-btn").onclick = () => this.show_hint();
+                document.getElementById("reset-btn").onclick = () => this.reset_game();
+                document.getElementById("menu-btn").onclick = () => this.show_menu();
+                document.getElementById("btn-pvp").onclick = () => this.start_game("PvP");
+                document.getElementById("btn-pve").onclick = () => this.start_game("PvE");
+            }
+
+            start_game(mode) {
+                this.mode = mode;
+                this.cpu_color = window.cpuColor || "white";
+                this.level = parseInt(window.selectedLv) || 5;
+                document.getElementById("menu-screen").style.display = "none";
+                document.getElementById("game-screen").style.display = "block";
+                this.reset_game();
+            }
+
+            show_menu() {
+                document.getElementById("game-screen").style.display = "none";
+                document.getElementById("menu-screen").style.display = "block";
+            }
+        }
+
+        const game = new NipWebGame();
+    </script>
+</body>
+</html>
                     });
                     
                     if (moves.length === 0) return;
