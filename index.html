@@ -349,8 +349,8 @@
                 let b = this.count_set_bits(this.black_bits), w = this.count_set_bits(this.white_bits);
                 let status = `黒: ${b}  白: ${w} | 次: ${this.turn === 'black' ? "黒" : "白"}`;
                 if (this.pass_msg) status = `${this.pass_msg} ${status}`;
-               \\ if (this.hint_move && this.current_hint_depth > 0) status += ` | 💡ヒント予測:${this.current_hint_depth}手`;
-               \\ else if (this.mode === "PvE" && this.current_cpu_depth > 0) status += ` | 🤖CPU予測:${this.current_cpu_depth}手`;
+            // if (this.hint_move && this.current_hint_depth > 0) status += ` | 💡ヒント予測:${this.current_hint_depth}手`;
+            // else if (this.mode === "PvE" && this.current_cpu_depth > 0) status += ` | 🤖CPU予測:${this.current_cpu_depth}手`;
                 this.status_label.innerText = status;
             }
 
