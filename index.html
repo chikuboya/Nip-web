@@ -105,29 +105,60 @@
             get_flipped_bits(pos_bit, own, opp) {
                 if ((pos_bit & VALID_MASK) === 0n || (pos_bit & (own | opp)) !== 0n) return 0n;
                 let flipped = 0n;
-                const shifts = [1n, 7n, 8n, 9n];
-                const masks = [0x7e7e7e7e7e7e7e7en, 0x7e7e7e7e7e7e7e7en, 0xffffffffffffffffn, 0x7e7e7e7e7e7e7e7en];
-                for (let i = 0; i < 4; i++) {
-                    const s = shifts[i], m = masks[i];
-                    let temp = (pos_bit << s) & m & opp;
-                    for (let j = 0; j < 5; j++) temp |= (temp << s) & m & opp;
-                    if ((temp << s) & m & own) flipped |= temp;
-                    temp = (pos_bit >> s) & m & opp;
-                    for (let j = 0; j < 5; j++) temp |= (temp >> s) & m & opp;
-                    if ((temp >> s) & m & own) flipped |= temp;
+
+                // 1. 直線方向の判定（8方向すべて）
+                // 方向ベクトル: [右, 左, 下, 上, 右下, 左上, 右上, 左下]
+                const directions = [
+                    { s: 1n,  m: 0xfe7e7e7e7e7e7e7en, dir: 'L' }, // 左
+                    { s: 1n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'R' }, // 右
+                    { s: 7n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'DL' },
+                    { s: 7n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'UR' },
+                    { s: 8n,  m: 0xffffffffffffffffn, dir: 'U/D' },
+                    { s: 9n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'DR' },
+                    { s: 9n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'UL' }
+                ];
+
+                // シンプルかつ確実なループ方式に切り替えます
+                const dx = [1, -1, 0, 0, 1, -1, 1, -1];
+                const dy = [0, 0, 1, -1, 1, -1, -1, 1];
+
+                const x = Number(VALID_COORDS.find(c => this.get_bit(c[0], c[1]) === pos_bit)[0]);
+                const y = Number(VALID_COORDS.find(c => this.get_bit(c[0], c[1]) === pos_bit)[1]);
+
+                for (let d = 0; d < 8; d++) {
+                    let temp_flipped = 0n;
+                    for (let step = 1; step < 8; step++) {
+                        const nx = x + dx[d] * step;
+                        const ny = y + dy[d] * step;
+                        if (nx < 0 || nx > 7 || ny < 0 || ny > 7) break;
+                        
+                        const nb = this.get_bit(nx, ny);
+                        if (!(nb & VALID_MASK)) break;
+                        
+                        if (nb & opp) {
+                            temp_flipped |= nb;
+                        } else if (nb & own) {
+                            if (temp_flipped !== 0n) flipped |= temp_flipped;
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                 }
+
+                // 2. 円周方向の判定（Nip Strategy 特有のルール）
                 if (pos_bit & CIRCUM_MASK) {
-                    const opp_circum = opp & CIRCUM_MASK;
-                    const own_circum = own & CIRCUM_MASK;
                     let circIdx = CIRCUMFERENCE.findIndex(c => this.get_bit(c[0], c[1]) === pos_bit);
                     [1, -1].forEach(d => {
-                        let path = 0n;
+                        let potential_flipped = 0n;
                         for (let i = 1; i < CIRCUMFERENCE.length; i++) {
-                            let idx = (circIdx + i * d + CIRCUMFERENCE.length * 100) % CIRCUMFERENCE.length;
+                            let idx = (circIdx + i * d + CIRCUMFERENCE.length) % CIRCUMFERENCE.length;
                             let b = this.get_bit(CIRCUMFERENCE[idx][0], CIRCUMFERENCE[idx][1]);
-                            if (b & opp_circum) path |= b;
-                            else if (b & own_circum) { if (path !== 0n) flipped |= path; break; }
-                            else break;
+                            if (b & opp) potential_flipped |= b;
+                            else if (b & own) {
+                                if (potential_flipped !== 0n) flipped |= potential_flipped;
+                                break;
+                            } else break;
                         }
                     });
                 }
@@ -425,15 +456,60 @@
 
             undo() {
                 if (this.history.length === 0) return;
-                this.is_game_over = false; this.result_label.style.display = "none";
-                let steps = (this.mode === "PvE" && this.history.length >= 2) ? 2 : 1;
-                for (let i = 0; i < steps; i++) {
-                    if (this.history.length > 0) {
-                        let s = this.history.pop();
-                        this.black_bits = s.black; this.white_bits = s.white; this.turn = s.turn; this.last_move = s.last;
-                    }
+                
+                // 実行待ちのタイマー（CPU思考やパス判定）をすべてキャンセル
+                if (this.pass_timer) {
+                    clearTimeout(this.pass_timer);
+                    this.pass_timer = null;
                 }
-                this.pass_msg = ""; this.draw();
+
+                this.is_game_over = false; 
+                this.result_label.style.display = "none";
+                this.pass_msg = ""; 
+                this.hint_move = null;
+
+                // --- ここから戻す手数の判定 ---
+                if (this.mode === "PvE") {
+                    // 直前の履歴を取り出して、誰の番だったか確認する
+                    const lastState = this.history[this.history.length - 1];
+                    
+                    if (lastState.turn !== this.cpu_color) {
+                        // 直前が「自分」の手なら、まだCPUは置いていないので1手だけ戻す
+                        let s = this.history.pop();
+                        this.black_bits = s.black; 
+                        this.white_bits = s.white; 
+                        this.turn = s.turn; 
+                        this.last_move = s.last;
+                    } else {
+                        // 直前が「CPU」の手なら、CPUが置いた後なので2手戻す
+                        for (let i = 0; i < 2; i++) {
+                            if (this.history.length > 0) {
+                                let s = this.history.pop();
+                                this.black_bits = s.black; 
+                                this.white_bits = s.white; 
+                                this.turn = s.turn; 
+                                this.last_move = s.last;
+                            }
+                        }
+                    }
+                } else {
+                    // PvP（対人戦）なら常に1手戻す
+                    let s = this.history.pop();
+                    this.black_bits = s.black; 
+                    this.white_bits = s.white; 
+                    this.turn = s.turn; 
+                    this.last_move = s.last;
+                }
+                // --- 判定ここまで ---
+
+                this.draw();
+
+                // 戻した結果、もしCPUの手番なら再起動、自分の手番ならガイド表示
+                if (this.mode === "PvE" && this.turn === this.cpu_color) {
+                    this.pass_timer = setTimeout(() => this.cpu_move(), 600);
+                } else {
+                    this.check_pass();
+                }
             }
 
             handle_click(event) {
@@ -472,4 +548,3 @@
     </script>
 </body>
 </html>
-
