@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nip Game - Optimized Hint</title>
+    <title>Nip Game - Bitboard Optimized</title>
     <style>
         body { font-family: 'Helvetica Neue', Arial, sans-serif; display: flex; flex-direction: column; align-items: center; background-color: #e0e0e0; margin: 0; padding: 20px; }
         #menu-screen, #game-screen { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); text-align: center; max-width: 650px; width: 100%; }
@@ -53,15 +53,19 @@
     </div>
 
     <div id="game-screen" style="display:none;">
+        <div class="controls" style="margin-bottom: 15px;">
+            <button id="menu-btn">メニューへ</button>
+            <button id="reset-btn">リセット</button>
+        </div>
+
         <div id="settings-display"></div>
         <div id="status-label">準備中...</div>
         <div id="result-label"></div>
         <canvas id="game-board" width="600" height="650"></canvas>
+
         <div class="controls">
             <button id="undo-btn">待った</button>
             <button id="hint-btn">ヒント</button>
-            <button id="reset-btn">リセット</button>
-            <button id="menu-btn">メニューへ</button>
         </div>
     </div>
 
@@ -72,7 +76,16 @@
         const VALID_COORDS = [[2,0], [3,0], [4,0], [5,0], [2,7], [3,7], [4,7], [5,7], [1,1], [2,1], [3,1], [4,1], [5,1], [6,1], [1,6], [2,6], [3,6], [4,6], [5,6], [6,6], [0,2], [1,2], [2,2], [3,2], [4,2], [5,2], [6,2], [7,2], [0,3], [1,3], [2,3], [3,3], [4,3], [5,3], [6,3], [7,3], [0,4], [1,4], [2,4], [3,4], [4,4], [5,4], [6,4], [7,4], [0,5], [1,5], [2,5], [3,5], [4,5], [5,5], [6,5], [7,5]];
         const CIRCUMFERENCE = [[0,3], [0,2], [1,1], [2,0], [3,0], [4,0], [5,0], [6,1], [7,2], [7,3], [7,4], [7,5], [6,6], [5,7], [4,7], [3,7], [2,7], [1,6], [0,5], [0,4]];
         const STRATEGIC_NODES = [[0,3], [7,3], [3,0], [3,7], [0,2], [7,2], [0,5], [7,5]];
-        const k = (coord) => coord[0] + "," + coord[1];
+        
+        const VALID_MASK = VALID_COORDS.reduce((acc, [x, y]) => acc | (1n << BigInt(y * 8 + x)), 0n);
+        const CIRCUM_MASK = CIRCUMFERENCE.reduce((acc, [x, y]) => acc | (1n << BigInt(y * 8 + x)), 0n);
+        const STRATEGIC_MASK = STRATEGIC_NODES.reduce((acc, [x, y]) => acc | (1n << BigInt(y * 8 + x)), 0n);
+
+        // AI設定（数値管理の集約）
+        const AI_CONFIG = {
+            CPU: { BASE: 1.0, STRATEGIC: 25.0, CIRCUM: 10.0, LIBERTY_WEIGHT: 1.5 },
+            HINT: { BASE: 1.0, STRATEGIC: 0, CIRCUM: 16.0, LIBERTY_WEIGHT: 1.5 }
+        };
 
         class NipWebGame {
             constructor() {
@@ -87,97 +100,229 @@
                 this.setup_ui_events();
             }
 
-            // --- 極限強化版ヒント：中盤18手 / 終盤22手完読み ---
+            get_bit(x, y) { return 1n << BigInt(y * 8 + x); }
+
+            get_flipped_bits(pos_bit, own, opp) {
+                if ((pos_bit & VALID_MASK) === 0n || (pos_bit & (own | opp)) !== 0n) return 0n;
+                let flipped = 0n;
+                const shifts = [1n, 7n, 8n, 9n];
+                const masks = [0x7e7e7e7e7e7e7e7en, 0x7e7e7e7e7e7e7e7en, 0xffffffffffffffffn, 0x7e7e7e7e7e7e7e7en];
+                for (let i = 0; i < 4; i++) {
+                    const s = shifts[i], m = masks[i];
+                    let temp = (pos_bit << s) & m & opp;
+                    for (let j = 0; j < 5; j++) temp |= (temp << s) & m & opp;
+                    if ((temp << s) & m & own) flipped |= temp;
+                    temp = (pos_bit >> s) & m & opp;
+                    for (let j = 0; j < 5; j++) temp |= (temp >> s) & m & opp;
+                    if ((temp >> s) & m & own) flipped |= temp;
+                }
+                if (pos_bit & CIRCUM_MASK) {
+                    const opp_circum = opp & CIRCUM_MASK;
+                    const own_circum = own & CIRCUM_MASK;
+                    let circIdx = CIRCUMFERENCE.findIndex(c => this.get_bit(c[0], c[1]) === pos_bit);
+                    [1, -1].forEach(d => {
+                        let path = 0n;
+                        for (let i = 1; i < CIRCUMFERENCE.length; i++) {
+                            let idx = (circIdx + i * d + CIRCUMFERENCE.length * 100) % CIRCUMFERENCE.length;
+                            let b = this.get_bit(CIRCUMFERENCE[idx][0], CIRCUMFERENCE[idx][1]);
+                            if (b & opp_circum) path |= b;
+                            else if (b & own_circum) { if (path !== 0n) flipped |= path; break; }
+                            else break;
+                        }
+                    });
+                }
+                return flipped;
+            }
+
+            count_set_bits(n) {
+                let count = 0;
+                let temp = n & VALID_MASK;
+                while (temp > 0n) { if (temp & 1n) count++; temp >>= 1n; }
+                return count;
+            }
+
+            getMovePriority(pos_bit) {
+                if (pos_bit & STRATEGIC_MASK) return 100;
+                if (pos_bit & CIRCUM_MASK) return 50;
+                return 0;
+            }
+
+            // セル価値計算ヘルパー
+            get_cell_value(b, useHintNodes, conf) {
+                let val = conf.BASE;
+                if (useHintNodes) {
+                    if (b & CIRCUM_MASK) val += conf.CIRCUM;
+                } else {
+                    if (b & STRATEGIC_MASK) val += conf.STRATEGIC;
+                    else if (b & CIRCUM_MASK) val += conf.CIRCUM;
+                }
+                return val;
+            }
+
+            // 開放度計算ヘルパー
+            get_liberties(x, y, all_bits) {
+                let liberties = 0;
+                [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dx, dy]) => {
+                    const nb = this.get_bit(x + dx, y + dy);
+                    if ((nb & VALID_MASK) && !(all_bits & nb)) liberties++;
+                });
+                return liberties;
+            }
+
+            // フル盤面評価
+            evaluate_board(own, opp, useHintNodes = false) {
+                let score = 0;
+                const total = this.count_set_bits(own | opp);
+                if (total > 41) return Number(this.count_set_bits(own) - this.count_set_bits(opp));
+                const conf = useHintNodes ? AI_CONFIG.HINT : AI_CONFIG.CPU;
+                VALID_COORDS.forEach(([x, y]) => {
+                    const b = this.get_bit(x, y);
+                    if ((own | opp) & b) {
+                        let val = this.get_cell_value(b, useHintNodes, conf);
+                        val -= this.get_liberties(x, y, own | opp) * conf.LIBERTY_WEIGHT;
+                        if (own & b) score += val; else score -= val;
+                    }
+                });
+                return score;
+            }
+
+            // 差分スコア計算（爆速化の要）
+            calculate_next_score(currentScore, x, y, pos_bit, flipped_bits, is_maximizing, useHintNodes) {
+                const conf = useHintNodes ? AI_CONFIG.HINT : AI_CONFIG.CPU;
+                let val = this.get_cell_value(pos_bit, useHintNodes, conf);
+                val -= this.get_liberties(x, y, (this.black_bits | this.white_bits) | pos_bit) * conf.LIBERTY_WEIGHT;
+                const flipCount = this.count_set_bits(flipped_bits);
+                const diff = val + (flipCount * 2.0);
+                return is_maximizing ? currentScore + diff : currentScore - diff;
+            }
+
+            // PVS + 差分計算 minimax
+            minimax(own, opp, depth, alpha, beta, is_maximizing, useHintNodes, currentScore) {
+                if (Date.now() - this.start_time > this.time_limit || this.abort_search) {
+                    this.abort_search = true; return currentScore;
+                }
+                if (depth <= 0) return currentScore;
+
+                let moves = [];
+                const p_own = is_maximizing ? own : opp;
+                const p_opp = is_maximizing ? opp : own;
+                VALID_COORDS.forEach(([x, y]) => {
+                    const b = this.get_bit(x, y);
+                    const f = this.get_flipped_bits(b, p_own, p_opp);
+                    if (f !== 0n) moves.push({x, y, b, f, prio: this.getMovePriority(b)});
+                });
+                if (moves.length === 0) return currentScore;
+                moves.sort((a, b) => b.prio - a.prio);
+
+                for (let i = 0; i < moves.length; i++) {
+                    const m = moves[i];
+                    const nextScore = this.calculate_next_score(currentScore, m.x, m.y, m.b, m.f, is_maximizing, useHintNodes);
+                    let v;
+                    if (is_maximizing) {
+                        if (i === 0) v = this.minimax(own | m.b | m.f, opp & ~m.f, depth - 1, alpha, beta, false, useHintNodes, nextScore);
+                        else {
+                            v = this.minimax(own | m.b | m.f, opp & ~m.f, depth - 1, alpha, alpha + 1, false, useHintNodes, nextScore);
+                            if (v > alpha && v < beta) v = this.minimax(own | m.b | m.f, opp & ~m.f, depth - 1, alpha, beta, false, useHintNodes, nextScore);
+                        }
+                        alpha = Math.max(alpha, v);
+                    } else {
+                        if (i === 0) v = this.minimax(own & ~m.f, opp | m.b | m.f, depth - 1, alpha, beta, true, useHintNodes, nextScore);
+                        else {
+                            v = this.minimax(own & ~m.f, opp | m.b | m.f, depth - 1, beta - 1, beta, true, useHintNodes, nextScore);
+                            if (v < beta && v > alpha) v = this.minimax(own & ~m.f, opp | m.b | m.f, depth - 1, alpha, beta, true, useHintNodes, nextScore);
+                        }
+                        beta = Math.min(beta, v);
+                    }
+                    if (beta <= alpha) break;
+                }
+                return is_maximizing ? alpha : beta;
+            }
+
             show_hint() {
                 if (this.is_game_over || (this.mode === "PvE" && this.turn === this.cpu_color)) return;
-                this.status_label.innerText = "神の領域を探索中...";
-                
+                this.status_label.innerText = "ヒント思考中...";
                 setTimeout(() => {
-                    this.start_time = Date.now();
-                    this.time_limit = 2500; // 思考時間は2.5秒を維持（精度確保のため）
-                    this.abort_search = false;
-
-                    const emptyCells = VALID_COORDS.filter(n => this.board[k(n)] === null).length;
-                    
-                    // 終盤は22手、序盤・中盤は18手先まで探索
-                    const maxDepth = emptyCells <= 22 ? 22 : 18; 
-
-                    const moves = [];
-                    VALID_COORDS.forEach(n => {
-                        let f = this.get_flipped(n, this.turn, this.board);
-                        if (f.length > 0) moves.push({m: n, f: f});
+                    this.start_time = Date.now(); this.time_limit = 3000; this.abort_search = false;
+                    const own = this.turn === 'black' ? this.black_bits : this.white_bits;
+                    const opp = this.turn === 'black' ? this.white_bits : this.black_bits;
+                    const initialScore = this.evaluate_board(own, opp, true);
+                    let moves = [];
+                    VALID_COORDS.forEach(([x, y]) => {
+                        const b = this.get_bit(x, y);
+                        const f = this.get_flipped_bits(b, own, opp);
+                        if (f !== 0n) moves.push({m: [x,y], x, y, b, f, prio: this.getMovePriority(b)});
                     });
-                    
                     if (moves.length === 0) return;
-
+                    moves.sort((a, b) => b.prio - a.prio);
                     let bestMove = moves[0].m;
-                    this.current_hint_depth = 0;
-
-                    // 反復深化：1手ずつ深く読み、時間限界まで最善を尽くす
-                    for (let d = 1; d <= maxDepth; d++) {
-                        let cur_best_v = -100000;
-                        let cur_best_m = null;
-
-                        for (let move of moves) {
-                            if (Date.now() - this.start_time > this.time_limit) { 
-                                this.abort_search = true; 
-                                break; 
-                            }
-                            
-                            let nb = Object.assign({}, this.board);
-                            nb[k(move.m)] = this.turn;
-                            move.f.forEach(s => nb[k(s)] = this.turn);
-                            
-                            // Alpha-Beta法による枝刈り探索
-                            let val = this.minimax(nb, d - 1, -100000, 100000, false, this.turn);
-                            if (val > cur_best_v) {
-                                cur_best_v = val;
-                                cur_best_m = move.m;
-                            }
+                    for (let d = 1; d <= 14; d++) {
+                        let cur_best_v = -100000; let cur_best_m = null;
+                        if (d > 1 && bestMove) {
+                            const idx = moves.findIndex(mv => mv.m[0] === bestMove[0] && mv.m[1] === bestMove[1]);
+                            if (idx > 0) { const [found] = moves.splice(idx, 1); moves.unshift(found); }
                         }
-                        
+                        for (let move of moves) {
+                            if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; break; }
+                            const ns = this.calculate_next_score(initialScore, move.x, move.y, move.b, move.f, true, true);
+                            let val = this.minimax(own | move.b | move.f, opp & ~move.f, d - 1, -100000, 100000, false, true, ns);
+                            if (val > cur_best_v) { cur_best_v = val; cur_best_m = move.m; }
+                        }
                         if (this.abort_search) break;
-                        bestMove = cur_best_m; 
-                        this.current_hint_depth = d; 
+                        bestMove = cur_best_m; this.current_hint_depth = d; 
                     }
-
-                    this.hint_move = bestMove;
-                    
-                    let modeText = "";
-                    if (emptyCells <= 22) {
-                        modeText = this.abort_search ? `【終盤・極限探索：深さ${this.current_hint_depth}】` : "【終盤・完全読み切り】";
-                    } else {
-                        modeText = `【超深層：深さ${this.current_hint_depth}】`;
-                    }
-                    
-                    this.status_label.innerText = `${modeText} ヒント: [${bestMove[0]}, ${bestMove[1]}]`;
-                    this.draw();
+                    this.hint_move = bestMove; this.draw();
                 }, 50);
             }
 
-            reset_game() {
-                this.board = {};
-                VALID_COORDS.forEach(coord => { this.board[k(coord)] = null; });
-                this.board[k([3,3])] = 'white'; this.board[k([4,4])] = 'white';
-                this.board[k([4,3])] = 'black'; this.board[k([3,4])] = 'black';
-                this.turn = 'black';
-                this.history = [];
-                this.last_move = null;
-                this.hint_move = null;
-                this.is_game_over = false;
-                this.pass_msg = "";
-                this.result_label.style.display = "none";
-                this.update_settings_ui();
-                this.draw();
-                if (this.mode === "PvE" && this.cpu_color === 'black') {
-                    setTimeout(() => this.cpu_move(), 600);
+            cpu_move() {
+                if (this.is_game_over) return;
+                const own = this.turn === 'black' ? this.black_bits : this.white_bits;
+                const opp = this.turn === 'black' ? this.white_bits : this.black_bits;
+                let moves = [];
+                VALID_COORDS.forEach(([x, y]) => {
+                    const b = this.get_bit(x, y);
+                    const f = this.get_flipped_bits(b, own, opp);
+                    if (f !== 0n) moves.push({m: [x, y], x, y, b, f});
+                });
+                if (moves.length === 0) return;
+                const total = this.count_set_bits(own | opp);
+                if (total <= 7) return this.make_move(moves[Math.floor(Math.random() * moves.length)].m);
+                const lv_cfg = { 1:{d:0,r:0.7,t:100}, 2:{d:1,r:0.5,t:200}, 3:{d:1,r:0.3,t:300}, 4:{d:2,r:0.2,t:400}, 5:{d:2,r:0.1,t:500}, 6:{d:4,r:0.05,t:700}, 7:{d:6,r:0,t:900}, 8:{d:7,r:0,t:1100}, 9:{d:8,r:0,t:1300}, 10:{d:14,r:0,t:2000} };
+                let cfg = lv_cfg[this.level] || lv_cfg[5];
+                if (Math.random() < cfg.r) this.make_move(moves[Math.floor(Math.random() * moves.length)].m);
+                else {
+                    this.start_time = Date.now(); this.time_limit = cfg.t; this.abort_search = false;
+                    const initialScore = this.evaluate_board(own, opp, false);
+                    let best_m = moves[0].m;
+                    for (let d = 1; d <= cfg.d; d++) {
+                        let cur_best_v = -100000; let cur_best_m = null;
+                        for (let move of moves) {
+                            if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; break; }
+                            const ns = this.calculate_next_score(initialScore, move.x, move.y, move.b, move.f, true, false);
+                            const val = this.minimax(own | move.b | move.f, opp & ~move.f, d - 1, -100000, 100000, false, false, ns);
+                            if (val > cur_best_v) { cur_best_v = val; cur_best_m = move.m; }
+                        }
+                        if (this.abort_search) break;
+                        best_m = cur_best_m; this.current_cpu_depth = d;
+                    }
+                    this.make_move(best_m);
                 }
+            }
+
+            reset_game() {
+                this.black_bits = this.get_bit(4, 3) | this.get_bit(3, 4);
+                this.white_bits = this.get_bit(3, 3) | this.get_bit(4, 4);
+                this.turn = 'black'; this.history = []; this.last_move = null; this.hint_move = null;
+                this.is_game_over = false; this.pass_msg = ""; this.current_cpu_depth = 0; this.current_hint_depth = 0;
+                this.result_label.style.display = "none"; this.update_settings_ui(); this.draw();
+                if (this.mode === "PvE" && this.cpu_color === 'black') setTimeout(() => this.cpu_move(), 600);
             }
 
             update_settings_ui() {
                 if (this.mode === "PvE") {
                     const colorTxt = this.cpu_color === 'black' ? "黒 (先手)" : "白 (後手)";
-                    this.settings_display.innerText = `対戦モード: CPU戦 | レベル: ${this.level} | CPUの色: ${colorTxt}`;
+                    // CPU戦を左に、色の前で改行
+                    this.settings_display.innerHTML = `CPU戦 レベル: ${this.level}<br>CPUの色: ${colorTxt}`;
                 } else {
                     this.settings_display.innerText = `対戦モード: 対人戦`;
                 }
@@ -185,282 +330,121 @@
 
             draw() {
                 this.ctx.clearRect(0, 0, 600, 650);
-                this.ctx.strokeStyle = "black";
-                this.ctx.lineWidth = 1.2;
+                this.ctx.strokeStyle = "black"; this.ctx.lineWidth = 1.2;
                 VALID_COORDS.forEach(c => {
-                    let x1 = this.offset + c[0] * this.cell_size;
-                    let y1 = this.offset + c[1] * this.cell_size;
+                    let x1 = this.offset + c[0] * this.cell_size, y1 = this.offset + c[1] * this.cell_size;
                     [[1,0], [0,1], [1,1], [1,-1]].forEach(([dx, dy]) => {
-                        let target = [c[0] + dx, c[1] + dy];
-                        if (this.board.hasOwnProperty(k(target))) {
-                            let x2 = this.offset + target[0] * this.cell_size;
-                            let y2 = this.offset + target[1] * this.cell_size;
+                        let tx = c[0] + dx, ty = c[1] + dy;
+                        if (VALID_COORDS.some(v => v[0] === tx && v[1] === ty)) {
+                            let x2 = this.offset + tx * this.cell_size, y2 = this.offset + ty * this.cell_size;
                             this.ctx.beginPath(); this.ctx.moveTo(x1, y1); this.ctx.lineTo(x2, y2); this.ctx.stroke();
                         }
                     });
                 });
-                let cx = this.offset + 3.5 * this.cell_size;
-                let cy = this.offset + 3.5 * this.cell_size;
+                let cx = this.offset + 3.5 * this.cell_size, cy = this.offset + 3.5 * this.cell_size;
                 this.ctx.beginPath(); this.ctx.arc(cx, cy, this.cell_size * 3.8, 0, Math.PI * 2);
                 this.ctx.lineWidth = 2; this.ctx.stroke();
-
-                VALID_COORDS.forEach(coord => {
-                    let x = this.offset + coord[0] * this.cell_size;
-                    let y = this.offset + coord[1] * this.cell_size;
-                    let stone = this.board[k(coord)];
-                    if (stone) {
-                        this.ctx.beginPath(); this.ctx.arc(x, y, this.cell_size * 0.38, 0, Math.PI * 2);
-                        this.ctx.fillStyle = stone === 'black' ? "black" : "white";
+                const own = this.turn === 'black' ? this.black_bits : this.white_bits;
+                const opp = this.turn === 'black' ? this.white_bits : this.black_bits;
+                VALID_COORDS.forEach(([x, y]) => {
+                    let px = this.offset + x * this.cell_size, py = this.offset + y * this.cell_size;
+                    const b = this.get_bit(x, y);
+                    if (this.black_bits & b || this.white_bits & b) {
+                        this.ctx.beginPath(); this.ctx.arc(px, py, this.cell_size * 0.38, 0, Math.PI * 2);
+                        this.ctx.fillStyle = (this.black_bits & b) ? "black" : "white";
                         this.ctx.fill(); this.ctx.strokeStyle = "#888"; this.ctx.stroke();
-                        if (this.last_move && coord[0] === this.last_move[0] && coord[1] === this.last_move[1]) {
-                            this.ctx.beginPath(); this.ctx.arc(x, y, this.cell_size * 0.4, 0, Math.PI * 2);
+                        if (this.last_move && x === this.last_move[0] && y === this.last_move[1]) {
+                            this.ctx.beginPath(); this.ctx.arc(px, py, this.cell_size * 0.4, 0, Math.PI * 2);
                             this.ctx.strokeStyle = "red"; this.ctx.lineWidth = 3; this.ctx.stroke();
                         }
                     } else {
-                        this.ctx.beginPath(); this.ctx.arc(x, y, 4, 0, Math.PI * 2);
+                        this.ctx.beginPath(); this.ctx.arc(px, py, 4, 0, Math.PI * 2);
                         this.ctx.fillStyle = "#556B2F"; this.ctx.fill();
                         if (!this.is_game_over && (this.mode === "PvP" || this.turn !== this.cpu_color)) {
-                            if (this.get_flipped(coord, this.turn, this.board).length > 0) {
-                                this.ctx.beginPath(); this.ctx.arc(x, y, this.cell_size * 0.2, 0, Math.PI * 2);
+                            if (this.get_flipped_bits(b, own, opp) !== 0n) {
+                                this.ctx.beginPath(); this.ctx.arc(px, py, this.cell_size * 0.2, 0, Math.PI * 2);
                                 this.ctx.fillStyle = "rgba(255, 255, 204, 0.6)"; this.ctx.fill();
                             }
                         }
                     }
                 });
-
                 if (this.hint_move) {
                     const [hc, hr] = this.hint_move;
-                    this.ctx.strokeStyle = "#3498db"; 
-                    this.ctx.lineWidth = 5;
-                    this.ctx.strokeRect(
-                        this.offset + hc * this.cell_size - (this.cell_size/2) + 5, 
-                        this.offset + hr * this.cell_size - (this.cell_size/2) + 5, 
-                        this.cell_size - 10, 
-                        this.cell_size - 10
-                    );
+                    this.ctx.strokeStyle = "#3498db"; this.ctx.lineWidth = 5;
+                    this.ctx.strokeRect(this.offset + hc * this.cell_size - (this.cell_size/2) + 5, this.offset + hr * this.cell_size - (this.cell_size/2) + 5, this.cell_size - 10, this.cell_size - 10);
                 }
-
                 this.update_status_ui();
             }
 
             update_status_ui() {
-                let b = Object.values(this.board).filter(v => v === 'black').length;
-                let w = Object.values(this.board).filter(v => v === 'white').length;
-                let t_name = this.turn === 'black' ? "黒" : "白";
-                let status = `黒: ${b}  白: ${w} | 次: ${t_name}`;
+                let b = this.count_set_bits(this.black_bits), w = this.count_set_bits(this.white_bits);
+                let status = `黒: ${b}  白: ${w} | 次: ${this.turn === 'black' ? "黒" : "白"}`;
                 if (this.pass_msg) status = `${this.pass_msg} ${status}`;
+                if (this.hint_move && this.current_hint_depth > 0) status += ` | 💡ヒント予測:${this.current_hint_depth}手`;
+                else if (this.mode === "PvE" && this.current_cpu_depth > 0) status += ` | 🤖CPU予測:${this.current_cpu_depth}手`;
                 this.status_label.innerText = status;
-            }
-
-            get_flipped(start, color, board_state) {
-                if (board_state[k(start)] !== null) return [];
-                let opp = color === 'black' ? 'white' : 'black';
-                let flipped = [];
-                [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dx, dy]) => {
-                    let path = []; let curr = [start[0] + dx, start[1] + dy];
-                    while (board_state.hasOwnProperty(k(curr))) {
-                        let st = board_state[k(curr)];
-                        if (st === opp) { path.push([...curr]); }
-                        else if (st === color) { if (path.length > 0) flipped.push(...path); break; }
-                        else break;
-                        curr = [curr[0] + dx, curr[1] + dy];
-                    }
-                });
-                let circIdx = CIRCUMFERENCE.findIndex(c => c[0] === start[0] && c[1] === start[1]);
-                if (circIdx !== -1) {
-                    [1, -1].forEach(d => {
-                        let path = [];
-                        for (let i = 1; i < CIRCUMFERENCE.length; i++) {
-                            let idx = (circIdx + i * d + CIRCUMFERENCE.length * 100) % CIRCUMFERENCE.length;
-                            let curr = CIRCUMFERENCE[idx];
-                            let st = board_state[k(curr)];
-                            if (st === opp) { path.push([...curr]); }
-                            else if (st === color) { if (path.length > 0) flipped.push(...path); break; }
-                            else break;
-                        }
-                    });
-                }
-                let unique = []; let seen = new Set();
-                flipped.forEach(p => { let key = k(p); if (!seen.has(key)) { seen.add(key); unique.push(p); } });
-                return unique;
-            }
-
-            evaluate_board(board, color) {
-                let score = 0;
-                let filled = Object.values(board).filter(v => v !== null).length;
-                let is_endgame = filled > 42;
-                for (let coordStr in board) {
-                    let st = board[coordStr]; if (st === null) continue;
-                    let coord = coordStr.split(',').map(Number);
-                    let val = 1.0;
-                    if (STRATEGIC_NODES.some(n => n[0] === coord[0] && n[1] === coord[1])) val += is_endgame ? 5.0 : 25.0;
-                    else if (CIRCUMFERENCE.some(n => n[0] === coord[0] && n[1] === coord[1])) val += is_endgame ? 3.0 : 10.0;
-                    if (!is_endgame) {
-                        let liberties = 0;
-                        [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dx, dy]) => {
-                            let nx = coord[0] + dx, ny = coord[1] + dy;
-                            if (board.hasOwnProperty(k([nx, ny])) && board[k([nx, ny])] === null) liberties++;
-                        });
-                        val -= liberties * 1.5;
-                    } else { val += 5.0; }
-                    if (st === color) score += val; else score -= val;
-                }
-                return score;
-            }
-
-            minimax(board, depth, alpha, beta, is_maximizing, color) {
-                if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; return this.evaluate_board(board, color); }
-                if (depth <= 0 || this.abort_search) return this.evaluate_board(board, color);
-                let opp = color === 'black' ? 'white' : 'black';
-                let curr_p = is_maximizing ? color : opp;
-                let moves = [];
-                VALID_COORDS.forEach(n => {
-                    let f = this.get_flipped(n, curr_p, board);
-                    if (f.length > 0) moves.push({m: n, f: f});
-                });
-                if (moves.length === 0) return this.evaluate_board(board, color);
-                if (is_maximizing) {
-                    let v = -99999;
-                    for (let move of moves) {
-                        let nb = Object.assign({}, board); nb[k(move.m)] = color;
-                        move.f.forEach(s => nb[k(s)] = color);
-                        v = Math.max(v, this.minimax(nb, depth - 1, alpha, beta, false, color));
-                        alpha = Math.max(alpha, v);
-                        if (beta <= alpha || this.abort_search) break;
-                    }
-                    return v;
-                } else {
-                    let v = 99999;
-                    for (let move of moves) {
-                        let nb = Object.assign({}, board); nb[k(move.m)] = opp;
-                        move.f.forEach(s => nb[k(s)] = opp);
-                        v = Math.min(v, this.minimax(nb, depth - 1, alpha, beta, true, color));
-                        beta = Math.min(beta, v);
-                        if (beta <= alpha || this.abort_search) break;
-                    }
-                    return v;
-                }
-            }
-
-            cpu_move() {
-                if (this.is_game_over || this.turn !== this.cpu_color) return;
-                let moves = [];
-                VALID_COORDS.forEach(n => {
-                    let f = this.get_flipped(n, this.turn, this.board);
-                    if (f.length > 0) moves.push({m: n, f: f});
-                });
-                if (moves.length === 0) return;
-                const blackCount = Object.values(this.board).filter(v => v === 'black').length;
-                const whiteCount = Object.values(this.board).filter(v => v === 'white').length;
-                if (this.cpu_color === 'black' && this.turn === 'black' && (blackCount === 2 || blackCount === 3)) {
-                    this.make_move(moves[Math.floor(Math.random() * moves.length)].m); return;
-                }
-                if (this.cpu_color === 'white' && this.turn === 'white' && whiteCount === 2) {
-                    this.make_move(moves[Math.floor(Math.random() * moves.length)].m); return;
-                }
-                const lv_cfg = {
-                    1: {d: 0, r: 0.7, t: 100},  2: {d: 1, r: 0.5, t: 200},
-                    3: {d: 1, r: 0.3, t: 300},  4: {d: 2, r: 0.2, t: 400},
-                    5: {d: 2, r: 0.1, t: 500},  6: {d: 4, r: 0.05, t: 700},
-                    7: {d: 6, r: 0.0, t: 900},  8: {d: 8, r: 0.0, t: 1100},
-                    9: {d: 10, r: 0.0, t: 1300}, 10: {d: 14, r: 0.0, t: 1500}
-                };
-                let cfg = lv_cfg[this.level] || lv_cfg[5];
-                if (Math.random() < cfg.r) {
-                    this.make_move(moves[Math.floor(Math.random() * moves.length)].m);
-                } else {
-                    this.start_time = Date.now(); this.time_limit = cfg.t; this.abort_search = false;
-                    let best_m = moves[0].m;
-                    for (let d = 1; d <= cfg.d; d++) {
-                        let cur_best_v = -100000; let cur_best_m = null;
-                        for (let move of moves) {
-                            if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; break; }
-                            let nb = Object.assign({}, this.board); nb[k(move.m)] = this.turn;
-                            move.f.forEach(s => nb[k(s)] = this.turn);
-                            let val = this.minimax(nb, d - 1, -100000, 100000, false, this.turn);
-                            if (val > cur_best_v) { cur_best_v = val; cur_best_m = move.m; }
-                        }
-                        if (this.abort_search) break;
-                        best_m = cur_best_m;
-                    }
-                    this.make_move(best_m);
-                }
             }
 
             make_move(coord) {
                 if (this.is_game_over) return;
-                let to_flip = this.get_flipped(coord, this.turn, this.board);
-                if (to_flip.length > 0) {
-                    this.pass_msg = "";
-                    this.history.push({board: Object.assign({}, this.board), turn: this.turn, last_move: this.last_move});
-                    this.board[k(coord)] = this.turn; this.last_move = coord;
-                    to_flip.forEach(n => this.board[k(n)] = this.turn);
-                    this.turn = this.turn === 'black' ? 'white' : 'black';
+                this.hint_move = null; this.current_hint_depth = 0;
+                if (this.turn !== this.cpu_color) this.current_cpu_depth = 0;
+                const b = this.get_bit(coord[0], coord[1]);
+                const own = this.turn === 'black' ? this.black_bits : this.white_bits;
+                const opp = this.turn === 'black' ? this.white_bits : this.black_bits;
+                const f = this.get_flipped_bits(b, own, opp);
+                if (f !== 0n) {
+                    this.pass_msg = ""; this.history.push({black: this.black_bits, white: this.white_bits, turn: this.turn, last: this.last_move});
+                    if (this.turn === 'black') { this.black_bits |= (b | f); this.white_bits &= ~f; }
+                    else { this.white_bits |= (b | f); this.black_bits &= ~f; }
+                    this.last_move = coord; this.turn = this.turn === 'black' ? 'white' : 'black';
                     this.draw(); setTimeout(() => this.check_pass(), 300);
                 }
             }
 
             check_pass() {
-                if (this.is_game_over) return;
-                let has_move = VALID_COORDS.some(n => this.get_flipped(n, this.turn, this.board).length > 0);
+                const own = this.turn === 'black' ? this.black_bits : this.white_bits;
+                const opp = this.turn === 'black' ? this.white_bits : this.black_bits;
+                const has_move = VALID_COORDS.some(c => this.get_flipped_bits(this.get_bit(c[0], c[1]), own, opp) !== 0n);
                 if (!has_move) {
-                    let opp = this.turn === 'black' ? 'white' : 'black';
-                    let opp_has_move = VALID_COORDS.some(n => this.get_flipped(n, opp, this.board).length > 0);
-                    if (!opp_has_move) { this.end_game(); }
-                    else {
-                        let p_name = this.turn === 'black' ? "黒" : "白";
-                        this.pass_msg = `【${p_name}はパス】`;
-                        this.history.push({board: Object.assign({}, this.board), turn: this.turn, last_move: this.last_move});
-                        this.turn = opp; this.draw();
-                        if (this.mode === "PvE" && this.turn === this.cpu_color) setTimeout(() => this.cpu_move(), 800);
-                    }
-                } else if (this.mode === "PvE" && this.turn === this.cpu_color) {
-                    setTimeout(() => this.cpu_move(), 600);
-                }
+                    const opp_has = VALID_COORDS.some(c => this.get_flipped_bits(this.get_bit(c[0], c[1]), opp, own) !== 0n);
+                    if (!opp_has) return this.end_game();
+                    this.pass_msg = `【${this.turn === 'black' ? "黒" : "白"}はパス】`;
+                    this.history.push({black: this.black_bits, white: this.white_bits, turn: this.turn, last: this.last_move});
+                    this.turn = this.turn === 'black' ? 'white' : 'black'; this.draw();
+                    if (this.mode === "PvE" && this.turn === this.cpu_color) setTimeout(() => this.cpu_move(), 800);
+                } else if (this.mode === "PvE" && this.turn === this.cpu_color) setTimeout(() => this.cpu_move(), 600);
             }
 
             end_game() {
-                this.is_game_over = true;
-                this.hint_move = null;
-                let b = Object.values(this.board).filter(v => v === 'black').length;
-                let w = Object.values(this.board).filter(v => v === 'white').length;
-                let winner = b > w ? "黒の勝ち！" : w > b ? "白の勝ち！" : "引き分け";
-                this.result_label.innerText = winner; this.result_label.style.display = "block"; this.draw();
+                this.is_game_over = true; this.hint_move = null;
+                const b = this.count_set_bits(this.black_bits), w = this.count_set_bits(this.white_bits);
+                this.result_label.innerText = b > w ? "黒の勝ち！" : w > b ? "白の勝ち！" : "引き分け";
+                this.result_label.style.display = "block"; this.draw();
             }
 
             undo() {
                 if (this.history.length === 0) return;
                 this.is_game_over = false; this.result_label.style.display = "none";
-                this.hint_move = null;
                 let steps = (this.mode === "PvE" && this.history.length >= 2) ? 2 : 1;
-                if (this.mode === "PvE" && this.cpu_color === 'black' && this.history.length === 1) steps = 1;
                 for (let i = 0; i < steps; i++) {
                     if (this.history.length > 0) {
                         let s = this.history.pop();
-                        this.board = s.board; this.turn = s.turn; this.last_move = s.last_move;
+                        this.black_bits = s.black; this.white_bits = s.white; this.turn = s.turn; this.last_move = s.last;
                     }
                 }
                 this.pass_msg = ""; this.draw();
-                if (this.mode === "PvE" && this.turn === this.cpu_color) {
-                    setTimeout(() => this.cpu_move(), 800);
-                }
             }
 
             handle_click(event) {
-                if (this.is_game_over) return;
-                this.hint_move = null;
-                if (this.mode === "PvE" && this.turn === this.cpu_color) return;
+                if (this.is_game_over || (this.mode === "PvE" && this.turn === this.cpu_color)) return;
                 let rect = this.canvas.getBoundingClientRect();
-                let scaleX = this.canvas.width / rect.width;
-                let scaleY = this.canvas.height / rect.height;
-                let x = (event.clientX - rect.left) * scaleX;
-                let y = (event.clientY - rect.top) * scaleY;
-                let best = null; let min_dist = this.cell_size * 0.5;
+                let x = (event.clientX - rect.left) * (this.canvas.width / rect.width);
+                let y = (event.clientY - rect.top) * (this.canvas.height / rect.height);
+                let best = null, min_d = 31;
                 VALID_COORDS.forEach(c => {
-                    let nx = this.offset + c[0] * this.cell_size;
-                    let ny = this.offset + c[1] * this.cell_size;
-                    let d = Math.hypot(nx - x, ny - y);
-                    if (d < min_dist) { min_dist = d; best = c; }
+                    let d = Math.hypot(this.offset + c[0] * this.cell_size - x, this.offset + c[1] * this.cell_size - y);
+                    if (d < min_d) { min_d = d; best = c; }
                 });
                 if (best) this.make_move(best);
             }
@@ -476,21 +460,16 @@
             }
 
             start_game(mode) {
-                this.mode = mode;
-                this.cpu_color = window.cpuColor || "white";
-                this.level = parseInt(window.selectedLv) || 5;
+                this.mode = mode; this.cpu_color = window.cpuColor; this.level = window.selectedLv;
                 document.getElementById("menu-screen").style.display = "none";
                 document.getElementById("game-screen").style.display = "block";
                 this.reset_game();
             }
 
-            show_menu() {
-                document.getElementById("game-screen").style.display = "none";
-                document.getElementById("menu-screen").style.display = "block";
-            }
+            show_menu() { document.getElementById("game-screen").style.display = "none"; document.getElementById("menu-screen").style.display = "block"; }
         }
-
-        const game = new NipWebGame();
+        window.onload = () => { new NipWebGame(); };
     </script>
 </body>
 </html>
+
