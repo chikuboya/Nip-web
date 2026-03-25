@@ -81,10 +81,9 @@
         const CIRCUM_MASK = CIRCUMFERENCE.reduce((acc, [x, y]) => acc | (1n << BigInt(y * 8 + x)), 0n);
         const STRATEGIC_MASK = STRATEGIC_NODES.reduce((acc, [x, y]) => acc | (1n << BigInt(y * 8 + x)), 0n);
 
-        // AI設定（数値管理の集約）
         const AI_CONFIG = {
-            CPU: { BASE: 1.0, STRATEGIC: 25.0, CIRCUM: 10.0, LIBERTY_WEIGHT: 1.5 },
-            HINT: { BASE: 1.0, STRATEGIC: 0, CIRCUM: 16.0, LIBERTY_WEIGHT: 1.5 }
+            CPU: { BASE: 1.0, STRATEGIC: 25.0, CIRCUM: 10.0 },
+            HINT: { BASE: 1.0, STRATEGIC: 0, CIRCUM: 16.0 }
         };
 
         class NipWebGame {
@@ -106,47 +105,25 @@
                 if ((pos_bit & VALID_MASK) === 0n || (pos_bit & (own | opp)) !== 0n) return 0n;
                 let flipped = 0n;
 
-                // 1. 直線方向の判定（8方向すべて）
-                // 方向ベクトル: [右, 左, 下, 上, 右下, 左上, 右上, 左下]
-                const directions = [
-                    { s: 1n,  m: 0xfe7e7e7e7e7e7e7en, dir: 'L' }, // 左
-                    { s: 1n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'R' }, // 右
-                    { s: 7n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'DL' },
-                    { s: 7n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'UR' },
-                    { s: 8n,  m: 0xffffffffffffffffn, dir: 'U/D' },
-                    { s: 9n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'DR' },
-                    { s: 9n,  m: 0x7e7e7e7e7e7e7e7en, dir: 'UL' }
-                ];
-
-                // シンプルかつ確実なループ方式に切り替えます
                 const dx = [1, -1, 0, 0, 1, -1, 1, -1];
                 const dy = [0, 0, 1, -1, 1, -1, -1, 1];
 
-                const x = Number(VALID_COORDS.find(c => this.get_bit(c[0], c[1]) === pos_bit)[0]);
-                const y = Number(VALID_COORDS.find(c => this.get_bit(c[0], c[1]) === pos_bit)[1]);
+                const coord = VALID_COORDS.find(c => this.get_bit(c[0], c[1]) === pos_bit);
+                const x = Number(coord[0]), y = Number(coord[1]);
 
                 for (let d = 0; d < 8; d++) {
                     let temp_flipped = 0n;
                     for (let step = 1; step < 8; step++) {
-                        const nx = x + dx[d] * step;
-                        const ny = y + dy[d] * step;
+                        const nx = x + dx[d] * step, ny = y + dy[d] * step;
                         if (nx < 0 || nx > 7 || ny < 0 || ny > 7) break;
-                        
                         const nb = this.get_bit(nx, ny);
                         if (!(nb & VALID_MASK)) break;
-                        
-                        if (nb & opp) {
-                            temp_flipped |= nb;
-                        } else if (nb & own) {
-                            if (temp_flipped !== 0n) flipped |= temp_flipped;
-                            break;
-                        } else {
-                            break;
-                        }
+                        if (nb & opp) temp_flipped |= nb;
+                        else if (nb & own) { if (temp_flipped !== 0n) flipped |= temp_flipped; break; }
+                        else break;
                     }
                 }
 
-                // 2. 円周方向の判定（Nip Strategy 特有のルール）
                 if (pos_bit & CIRCUM_MASK) {
                     let circIdx = CIRCUMFERENCE.findIndex(c => this.get_bit(c[0], c[1]) === pos_bit);
                     [1, -1].forEach(d => {
@@ -155,10 +132,8 @@
                             let idx = (circIdx + i * d + CIRCUMFERENCE.length) % CIRCUMFERENCE.length;
                             let b = this.get_bit(CIRCUMFERENCE[idx][0], CIRCUMFERENCE[idx][1]);
                             if (b & opp) potential_flipped |= b;
-                            else if (b & own) {
-                                if (potential_flipped !== 0n) flipped |= potential_flipped;
-                                break;
-                            } else break;
+                            else if (b & own) { if (potential_flipped !== 0n) flipped |= potential_flipped; break; }
+                            else break;
                         }
                     });
                 }
@@ -178,90 +153,62 @@
                 return 0;
             }
 
-            // セル価値計算ヘルパー
-            get_cell_value(b, useHintNodes, conf) {
-                let val = conf.BASE;
-                if (useHintNodes) {
-                    if (b & CIRCUM_MASK) val += conf.CIRCUM;
-                } else {
-                    if (b & STRATEGIC_MASK) val += conf.STRATEGIC;
-                    else if (b & CIRCUM_MASK) val += conf.CIRCUM;
-                }
-                return val;
-            }
-
-            // 開放度計算ヘルパー
-            get_liberties(x, y, all_bits) {
-                let liberties = 0;
-                [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]].forEach(([dx, dy]) => {
-                    const nb = this.get_bit(x + dx, y + dy);
-                    if ((nb & VALID_MASK) && !(all_bits & nb)) liberties++;
-                });
-                return liberties;
-            }
-
-            // フル盤面評価
             evaluate_board(own, opp, useHintNodes = false) {
                 let score = 0;
                 const total = this.count_set_bits(own | opp);
-                if (total > 41) return Number(this.count_set_bits(own) - this.count_set_bits(opp));
+                const is_endgame = total > 42;
                 const conf = useHintNodes ? AI_CONFIG.HINT : AI_CONFIG.CPU;
-                VALID_COORDS.forEach(([x, y]) => {
-                    const b = this.get_bit(x, y);
-                    if ((own | opp) & b) {
-                        let val = this.get_cell_value(b, useHintNodes, conf);
-                        val -= this.get_liberties(x, y, own | opp) * conf.LIBERTY_WEIGHT;
-                        if (own & b) score += val; else score -= val;
-                    }
-                });
+
+                // 石の数による実利計算
+                const ownCount = this.count_set_bits(own);
+                const oppCount = this.count_set_bits(opp);
+                score += (ownCount - oppCount) * conf.BASE;
+
+                // 拠点および円周の重み付け判定
+                if (!useHintNodes) {
+                    const strategicOwn = this.count_set_bits(own & STRATEGIC_MASK);
+                    const strategicOpp = this.count_set_bits(opp & STRATEGIC_MASK);
+                    score += (strategicOwn - strategicOpp) * (is_endgame ? 5.0 : conf.STRATEGIC);
+                }
+
+                const circumOwn = this.count_set_bits(own & CIRCUM_MASK);
+                const circumOpp = this.count_set_bits(opp & CIRCUM_MASK);
+                score += (circumOwn - circumOpp) * (is_endgame ? 3.0 : conf.CIRCUM);
+
+                // 終盤の全体加点（旧コード再現）
+                if (is_endgame) {
+                    score += (ownCount - oppCount) * 5.0;
+                }
+
                 return score;
             }
 
-            // 差分スコア計算（爆速化の要）
-            calculate_next_score(currentScore, x, y, pos_bit, flipped_bits, is_maximizing, useHintNodes) {
-                const conf = useHintNodes ? AI_CONFIG.HINT : AI_CONFIG.CPU;
-                let val = this.get_cell_value(pos_bit, useHintNodes, conf);
-                val -= this.get_liberties(x, y, (this.black_bits | this.white_bits) | pos_bit) * conf.LIBERTY_WEIGHT;
-                const flipCount = this.count_set_bits(flipped_bits);
-                const diff = val + (flipCount * 2.0);
-                return is_maximizing ? currentScore + diff : currentScore - diff;
-            }
-
-            // PVS + 差分計算 minimax
-            minimax(own, opp, depth, alpha, beta, is_maximizing, useHintNodes, currentScore) {
+            minimax(own, opp, depth, alpha, beta, is_maximizing, useHintNodes) {
                 if (Date.now() - this.start_time > this.time_limit || this.abort_search) {
-                    this.abort_search = true; return currentScore;
+                    this.abort_search = true; return this.evaluate_board(own, opp, useHintNodes);
                 }
-                if (depth <= 0) return currentScore;
+                if (depth <= 0) return this.evaluate_board(own, opp, useHintNodes);
 
                 let moves = [];
                 const p_own = is_maximizing ? own : opp;
                 const p_opp = is_maximizing ? opp : own;
+                
                 VALID_COORDS.forEach(([x, y]) => {
                     const b = this.get_bit(x, y);
                     const f = this.get_flipped_bits(b, p_own, p_opp);
-                    if (f !== 0n) moves.push({x, y, b, f, prio: this.getMovePriority(b)});
+                    if (f !== 0n) moves.push({b, f, prio: this.getMovePriority(b)});
                 });
-                if (moves.length === 0) return currentScore;
+
+                if (moves.length === 0) return this.evaluate_board(own, opp, useHintNodes);
                 moves.sort((a, b) => b.prio - a.prio);
 
-                for (let i = 0; i < moves.length; i++) {
-                    const m = moves[i];
-                    const nextScore = this.calculate_next_score(currentScore, m.x, m.y, m.b, m.f, is_maximizing, useHintNodes);
+                for (let m of moves) {
                     let v;
                     if (is_maximizing) {
-                        if (i === 0) v = this.minimax(own | m.b | m.f, opp & ~m.f, depth - 1, alpha, beta, false, useHintNodes, nextScore);
-                        else {
-                            v = this.minimax(own | m.b | m.f, opp & ~m.f, depth - 1, alpha, alpha + 1, false, useHintNodes, nextScore);
-                            if (v > alpha && v < beta) v = this.minimax(own | m.b | m.f, opp & ~m.f, depth - 1, alpha, beta, false, useHintNodes, nextScore);
-                        }
+                        v = this.minimax(own | m.b | m.f, opp & ~m.f, depth - 1, alpha, beta, false, useHintNodes);
                         alpha = Math.max(alpha, v);
                     } else {
-                        if (i === 0) v = this.minimax(own & ~m.f, opp | m.b | m.f, depth - 1, alpha, beta, true, useHintNodes, nextScore);
-                        else {
-                            v = this.minimax(own & ~m.f, opp | m.b | m.f, depth - 1, beta - 1, beta, true, useHintNodes, nextScore);
-                            if (v < beta && v > alpha) v = this.minimax(own & ~m.f, opp | m.b | m.f, depth - 1, alpha, beta, true, useHintNodes, nextScore);
-                        }
+                        v = this.minimax(own & ~m.f, opp | m.b | m.f, depth - 1, alpha, beta, true, useHintNodes);
                         beta = Math.min(beta, v);
                     }
                     if (beta <= alpha) break;
@@ -276,26 +223,20 @@
                     this.start_time = Date.now(); this.time_limit = 3000; this.abort_search = false;
                     const own = this.turn === 'black' ? this.black_bits : this.white_bits;
                     const opp = this.turn === 'black' ? this.white_bits : this.black_bits;
-                    const initialScore = this.evaluate_board(own, opp, true);
                     let moves = [];
                     VALID_COORDS.forEach(([x, y]) => {
                         const b = this.get_bit(x, y);
                         const f = this.get_flipped_bits(b, own, opp);
-                        if (f !== 0n) moves.push({m: [x,y], x, y, b, f, prio: this.getMovePriority(b)});
+                        if (f !== 0n) moves.push({m: [x,y], b, f, prio: this.getMovePriority(b)});
                     });
                     if (moves.length === 0) return;
                     moves.sort((a, b) => b.prio - a.prio);
                     let bestMove = moves[0].m;
                     for (let d = 1; d <= 14; d++) {
-                        let cur_best_v = -100000; let cur_best_m = null;
-                        if (d > 1 && bestMove) {
-                            const idx = moves.findIndex(mv => mv.m[0] === bestMove[0] && mv.m[1] === bestMove[1]);
-                            if (idx > 0) { const [found] = moves.splice(idx, 1); moves.unshift(found); }
-                        }
+                        let cur_best_v = -1000000; let cur_best_m = null;
                         for (let move of moves) {
                             if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; break; }
-                            const ns = this.calculate_next_score(initialScore, move.x, move.y, move.b, move.f, true, true);
-                            let val = this.minimax(own | move.b | move.f, opp & ~move.f, d - 1, -100000, 100000, false, true, ns);
+                            let val = this.minimax(own | move.b | move.f, opp & ~move.f, d - 1, -1000000, 1000000, false, true);
                             if (val > cur_best_v) { cur_best_v = val; cur_best_m = move.m; }
                         }
                         if (this.abort_search) break;
@@ -313,7 +254,7 @@
                 VALID_COORDS.forEach(([x, y]) => {
                     const b = this.get_bit(x, y);
                     const f = this.get_flipped_bits(b, own, opp);
-                    if (f !== 0n) moves.push({m: [x, y], x, y, b, f});
+                    if (f !== 0n) moves.push({m: [x, y], b, f});
                 });
                 if (moves.length === 0) return;
                 const total = this.count_set_bits(own | opp);
@@ -323,14 +264,12 @@
                 if (Math.random() < cfg.r) this.make_move(moves[Math.floor(Math.random() * moves.length)].m);
                 else {
                     this.start_time = Date.now(); this.time_limit = cfg.t; this.abort_search = false;
-                    const initialScore = this.evaluate_board(own, opp, false);
                     let best_m = moves[0].m;
                     for (let d = 1; d <= cfg.d; d++) {
-                        let cur_best_v = -100000; let cur_best_m = null;
+                        let cur_best_v = -1000000; let cur_best_m = null;
                         for (let move of moves) {
                             if (Date.now() - this.start_time > this.time_limit) { this.abort_search = true; break; }
-                            const ns = this.calculate_next_score(initialScore, move.x, move.y, move.b, move.f, true, false);
-                            const val = this.minimax(own | move.b | move.f, opp & ~move.f, d - 1, -100000, 100000, false, false, ns);
+                            const val = this.minimax(own | move.b | move.f, opp & ~move.f, d - 1, -1000000, 1000000, false, false);
                             if (val > cur_best_v) { cur_best_v = val; cur_best_m = move.m; }
                         }
                         if (this.abort_search) break;
@@ -352,7 +291,6 @@
             update_settings_ui() {
                 if (this.mode === "PvE") {
                     const colorTxt = this.cpu_color === 'black' ? "黒 (先手)" : "白 (後手)";
-                    // CPU戦を左に、色の前で改行
                     this.settings_display.innerHTML = `CPU戦 レベル: ${this.level}<br>CPUの色: ${colorTxt}`;
                 } else {
                     this.settings_display.innerText = `対戦モード: 対人戦`;
@@ -411,8 +349,8 @@
                 let b = this.count_set_bits(this.black_bits), w = this.count_set_bits(this.white_bits);
                 let status = `黒: ${b}  白: ${w} | 次: ${this.turn === 'black' ? "黒" : "白"}`;
                 if (this.pass_msg) status = `${this.pass_msg} ${status}`;
-                //  if (this.hint_move && this.current_hint_depth > 0) status += ` | 💡ヒント予測:${this.current_hint_depth}手`;
-                //  else if (this.mode === "PvE" && this.current_cpu_depth > 0) status += ` | 🤖CPU予測:${this.current_cpu_depth}手`;
+               \\ if (this.hint_move && this.current_hint_depth > 0) status += ` | 💡ヒント予測:${this.current_hint_depth}手`;
+               \\ else if (this.mode === "PvE" && this.current_cpu_depth > 0) status += ` | 🤖CPU予測:${this.current_cpu_depth}手`;
                 this.status_label.innerText = status;
             }
 
@@ -511,6 +449,7 @@
                     this.check_pass();
                 }
             }
+
 
             handle_click(event) {
                 if (this.is_game_over || (this.mode === "PvE" && this.turn === this.cpu_color)) return;
